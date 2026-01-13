@@ -177,27 +177,23 @@ class SemsDataUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("Found inverter attribute %s %s", name, sn)
                 data[sn] = inverter["invert_full"]
 
-            hasPowerflow = result["hasPowerflow"]
-            hasEnergeStatisticsCharts = result["hasEnergeStatisticsCharts"]
+            hasPowerflow = result["powerflow"]["hasPowerflow"]
 
             if hasPowerflow:
                 _LOGGER.debug("Found powerflow data")
-                if hasEnergeStatisticsCharts:
-                    StatisticsCharts = {
-                        f"Charts_{key}": val
-                        for key, val in result["energeStatisticsCharts"].items()
-                    }
-                    StatisticsTotals = {
-                        f"Totals_{key}": val
-                        for key, val in result["energeStatisticsTotals"].items()
-                    }
-                    powerflow = {
-                        **result["powerflow"],
-                        **StatisticsCharts,
-                        **StatisticsTotals,
-                    }
-                else:
-                    powerflow = result["powerflow"]
+                StatisticsCharts = {
+                    f"Charts_{key}": val
+                    for key, val in result["energeStatisticsCharts"].items()
+                }
+                StatisticsTotals = {
+                    f"Totals_{key}": val
+                    for key, val in result["energeStatisticsTotals"].items()
+                }
+                powerflow = {
+                    **result["powerflow"]["powerflow"],
+                    **StatisticsCharts,
+                    **StatisticsTotals,
+                }
 
                 powerflow["sn"] = result["homKit"]["sn"]
 

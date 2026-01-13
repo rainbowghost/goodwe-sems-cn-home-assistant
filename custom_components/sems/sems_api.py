@@ -1,5 +1,6 @@
 import json
 import logging
+import base64
 
 import requests
 
@@ -7,9 +8,10 @@ from homeassistant import exceptions
 
 _LOGGER = logging.getLogger(__name__)
 
-_LoginURL = "https://www.semsportal.com/api/v2/Common/CrossLogin"
+_LoginURL = "https://gopsapi.sems.com.cn/api/auth/gettoken"
+_APIURL = "https://gopsapi.sems.com.cn/api/"
 _GetPowerStationIdByOwnerURLPart = "/PowerStation/GetPowerStationIdByOwner"
-_PowerStationURLPart = "/v3/PowerStation/GetMonitorDetailByPowerstationId"
+_PowerStationURLPart = "/v1/PowerStation/GetMonitorDetailByPowerstationId"
 # _PowerControlURL = (
 #     "https://www.semsportal.com/api/PowerStation/SaveRemoteControlInverter"
 # )
@@ -19,9 +21,8 @@ _RequestTimeout = 30  # seconds
 _DefaultHeaders = {
     "Content-Type": "application/json",
     "Accept": "application/json",
-    "token": '{"version":"","client":"ios","language":"en"}',
+    "token": '{"uid":"","timestamp":0,"token":"","client":"web","version":"","language":"zh-TW"}',
 }
-
 
 class SemsApi:
     """Interface to the SEMS API."""
@@ -56,9 +57,17 @@ class SemsApi:
         try:
             _LOGGER.debug("SEMS - Making %s to %s", operation_name, url)
 
+            # Copy headers to avoid mutating shared defaults
+            req_headers = dict(headers)
+            if req_headers.get("token") == _DefaultHeaders.get("token"):
+                # Login endpoint expects the default token to be base64 encoded
+                req_headers["token"] = base64.b64encode(
+                    req_headers["token"].encode("utf-8")
+                ).decode("utf-8")
+
             response = requests.post(
                 url,
-                headers=headers,
+                headers=req_headers,
                 data=data,
                 json=json_data,
                 timeout=_RequestTimeout,
@@ -95,8 +104,9 @@ class SemsApi:
         """Get the login token for the SEMS API."""
         try:
             # Prepare Login Data to retrieve Authentication Token
-            # Dict won't work here somehow, so this magic string creation must do.
-            login_data = '{"account":"' + userName + '","pwd":"' + password + '"}'
+            encoded_username = base64.b64encode(userName.encode("utf-8")).decode("utf-8")
+            encoded_password = base64.b64encode(password.encode("utf-8")).decode("utf-8")
+            login_data = json.dumps({"account": encoded_username, "pwd": encoded_password})
 
             jsonResponse = self._make_http_request(
                 _LoginURL,
@@ -109,10 +119,8 @@ class SemsApi:
             if jsonResponse is None:
                 return None
 
-            # Get all the details from our response, needed to make the next POST request (the one that really fetches the data)
-            # Also store the api url send with the authentication request for later use
+            # Get token details from response
             tokenDict = jsonResponse["data"]
-            tokenDict["api"] = jsonResponse["api"]
 
             _LOGGER.debug("SEMS - API Token received: %s", tokenDict)
             return tokenDict
@@ -148,13 +156,16 @@ class SemsApi:
             return None
 
         # Prepare headers
+        encoded_token = base64.b64encode(
+            json.dumps(self._token).encode("utf-8")
+        ).decode("utf-8")
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "token": json.dumps(self._token),
+            "token": encoded_token,
         }
 
-        api_url = self._token["api"] + url_part
+        api_url = f"{_APIURL.rstrip('/')}{url_part}"
 
         try:
             jsonResponse = self._make_http_request(
@@ -238,7 +249,7 @@ class SemsApi:
             "token": json.dumps(self._token),
         }
 
-        api_url = self._token["api"] + _PowerControlURLPart
+        api_url = f"{_APIURL.rstrip('/')}{_PowerControlURLPart}"
 
         try:
             # Control API uses different validation (HTTP status code), so don't validate JSON response code

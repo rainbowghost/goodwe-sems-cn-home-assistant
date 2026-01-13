@@ -3,7 +3,15 @@
 import pytest
 import requests
 
-from custom_components.sems.sems_api import OutOfRetries, SemsApi
+from custom_components.sems.sems_api import (
+    OutOfRetries,
+    SemsApi,
+    _APIURL,
+    _GetPowerStationIdByOwnerURLPart,
+    _LoginURL,
+    _PowerControlURLPart,
+    _PowerStationURLPart,
+)
 
 # Test data constants - anonymized for privacy
 MOCK_INVERTER_SN = "GW0000SN000TEST1"
@@ -51,12 +59,9 @@ class TestSemsApi:
                 "version": "",
                 "language": "en",
             },
-            "api": "https://eu.semsportal.com/api/",
         }
 
-        requests_mock.post(
-            "https://www.semsportal.com/api/v2/Common/CrossLogin", json=login_response
-        )
+        requests_mock.post(_LoginURL, json=login_response)
 
         result = self.api.getLoginToken(self.username, self.password)
 
@@ -74,9 +79,7 @@ class TestSemsApi:
             "data": None,
         }
 
-        requests_mock.post(
-            "https://www.semsportal.com/api/v2/Common/CrossLogin", json=login_response
-        )
+        requests_mock.post(_LoginURL, json=login_response)
 
         result = self.api.getLoginToken(self.username, self.password)
 
@@ -85,8 +88,7 @@ class TestSemsApi:
     def test_login_network_error(self, requests_mock):
         """Test login with network error."""
         requests_mock.post(
-            "https://www.semsportal.com/api/v2/Common/CrossLogin",
-            exc=requests.ConnectionError("Network error"),
+            _LoginURL, exc=requests.ConnectionError("Network error")
         )
 
         result = self.api.getLoginToken(self.username, self.password)
@@ -98,12 +100,9 @@ class TestSemsApi:
         login_response = {
             "code": 0,
             "data": {"uid": "test-uid", "token": "test-token"},
-            "api": "https://eu.semsportal.com/api/",
         }
 
-        requests_mock.post(
-            "https://www.semsportal.com/api/v2/Common/CrossLogin", json=login_response
-        )
+        requests_mock.post(_LoginURL, json=login_response)
 
         result = self.api.test_authentication()
 
@@ -113,9 +112,7 @@ class TestSemsApi:
         """Test failed authentication test."""
         login_response = {"code": 1001, "msg": "Invalid credentials", "data": None}
 
-        requests_mock.post(
-            "https://www.semsportal.com/api/v2/Common/CrossLogin", json=login_response
-        )
+        requests_mock.post(_LoginURL, json=login_response)
 
         result = self.api.test_authentication()
 
@@ -127,10 +124,9 @@ class TestSemsApi:
         login_response = {
             "code": 0,
             "data": {"uid": "test-uid", "token": "test-token"},
-            "api": "https://eu.semsportal.com/api/",
         }
         requests_mock.post(
-            "https://www.semsportal.com/api/v2/Common/CrossLogin", json=login_response
+            _LoginURL, json=login_response
         )
 
         # Mock power station IDs response with realistic UUID
@@ -140,7 +136,7 @@ class TestSemsApi:
             "msg": SUCCESS_MESSAGE,
         }
         requests_mock.post(
-            "https://eu.semsportal.com/api//PowerStation/GetPowerStationIdByOwner",
+            f"{_APIURL.rstrip('/')}{_GetPowerStationIdByOwnerURLPart}",
             json=station_response,
         )
 
@@ -154,11 +150,8 @@ class TestSemsApi:
         login_response = {
             "code": 0,
             "data": {"uid": "test-uid", "token": "test-token"},
-            "api": "https://eu.semsportal.com/api/",
         }
-        requests_mock.post(
-            "https://www.semsportal.com/api/v2/Common/CrossLogin", json=login_response
-        )
+        requests_mock.post(_LoginURL, json=login_response)
 
         # Mock data response using real SEMS API structure
         data_response = {
@@ -210,7 +203,9 @@ class TestSemsApi:
                 ],
             },
         }
-        endpoint = "https://eu.semsportal.com/api//v3/PowerStation/GetMonitorDetailByPowerstationId"
+        endpoint = (
+            f"{_APIURL.rstrip('/')}{_PowerStationURLPart}"
+        )
         requests_mock.post(endpoint, json=data_response)
 
         result = self.api.getData(MOCK_POWER_STATION_ID)
@@ -229,9 +224,7 @@ class TestSemsApi:
         """Test getData returns empty dict on failure."""
         # Mock login failure
         login_response = {"code": 1001, "msg": "Invalid credentials", "data": None}
-        requests_mock.post(
-            "https://www.semsportal.com/api/v2/Common/CrossLogin", json=login_response
-        )
+        requests_mock.post(_LoginURL, json=login_response)
 
         result = self.api.getData("station123")
 
@@ -243,16 +236,11 @@ class TestSemsApi:
         login_response = {
             "code": 0,
             "data": {"uid": "test-uid", "token": "test-token"},
-            "api": "https://eu.semsportal.com/api/",
         }
-        requests_mock.post(
-            "https://www.semsportal.com/api/v2/Common/CrossLogin", json=login_response
-        )
+        requests_mock.post(_LoginURL, json=login_response)
 
         # Mock control response (HTTP 200 indicates success for control API)
-        endpoint = (
-            "https://eu.semsportal.com/api//PowerStation/SaveRemoteControlInverter"
-        )
+        endpoint = f"{_APIURL.rstrip('/')}{_PowerControlURLPart}"
         requests_mock.post(endpoint, json={"status": "success"}, status_code=200)
 
         # Should not raise exception
@@ -264,16 +252,11 @@ class TestSemsApi:
         login_response = {
             "code": 0,
             "data": {"uid": "test-uid", "token": "test-token"},
-            "api": "https://eu.semsportal.com/api/",
         }
-        requests_mock.post(
-            "https://www.semsportal.com/api/v2/Common/CrossLogin", json=login_response
-        )
+        requests_mock.post(_LoginURL, json=login_response)
 
         # Mock control error response
-        endpoint = (
-            "https://eu.semsportal.com/api//PowerStation/SaveRemoteControlInverter"
-        )
+        endpoint = f"{_APIURL.rstrip('/')}{_PowerControlURLPart}"
         requests_mock.post(endpoint, status_code=401)
 
         # Should raise OutOfRetries after exhausting retries
@@ -287,17 +270,14 @@ class TestSemsApi:
             {
                 "code": 0,
                 "data": {"uid": "test-uid", "token": "old-token"},
-                "api": "https://eu.semsportal.com/api/",
             },
             {
                 "code": 0,
                 "data": {"uid": "test-uid", "token": "new-token"},
-                "api": "https://eu.semsportal.com/api/",
             },
         ]
         requests_mock.post(
-            "https://www.semsportal.com/api/v2/Common/CrossLogin",
-            [{"json": resp} for resp in login_responses],
+            _LoginURL, [{"json": resp} for resp in login_responses]
         )
 
         # Mock API call responses (failure then success)
@@ -305,9 +285,7 @@ class TestSemsApi:
             {"code": 1002, "msg": "Token expired", "data": None},
             {"code": 0, "data": MOCK_POWER_STATION_ID, "msg": SUCCESS_MESSAGE},
         ]
-        endpoint = (
-            "https://eu.semsportal.com/api//PowerStation/GetPowerStationIdByOwner"
-        )
+        endpoint = f"{_APIURL.rstrip('/')}{_GetPowerStationIdByOwnerURLPart}"
         requests_mock.post(endpoint, [{"json": resp} for resp in api_responses])
 
         result = self.api.getPowerStationIds()

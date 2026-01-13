@@ -1,6 +1,12 @@
 """Simple integration tests for the SEMS API module using requests_mock."""
 
-from custom_components.sems.sems_api import SemsApi
+from custom_components.sems.sems_api import (
+    SemsApi,
+    _APIURL,
+    _GetPowerStationIdByOwnerURLPart,
+    _LoginURL,
+    _PowerStationURLPart,
+)
 
 # Anonymized data constants for testing
 MOCK_POWER_STATION_ID = "12345678-1234-5678-9abc-123456789abc"
@@ -28,19 +34,15 @@ class TestSemsApiSimple:
             "code": 0,
             "msg": "操作成功",
             "data": {"uid": "test-uid-123", "token": "test-token-abc123"},
-            "api": "https://eu.semsportal.com/api/",
         }
 
-        requests_mock.post(
-            "https://www.semsportal.com/api/v2/Common/CrossLogin", json=login_response
-        )
+        requests_mock.post(_LoginURL, json=login_response)
 
         result = self.api.getLoginToken(self.username, self.password)
 
         assert result is not None
         assert result["uid"] == "test-uid-123"
         assert result["token"] == "test-token-abc123"
-        assert result["api"] == "https://eu.semsportal.com/api/"
 
     def test_failed_login_invalid_credentials(self, requests_mock):
         """Test failed login with invalid credentials."""
@@ -51,7 +53,8 @@ class TestSemsApiSimple:
         }
 
         requests_mock.post(
-            "https://www.semsportal.com/api/v2/Common/CrossLogin", json=login_response
+            _LoginURL,
+            json=login_response,
         )
 
         result = self.api.getLoginToken(self.username, self.password)
@@ -65,12 +68,9 @@ class TestSemsApiSimple:
             "code": 0,
             "msg": "操作成功",
             "data": {"uid": "test-uid-123", "token": "test-token-abc123"},
-            "api": "https://eu.semsportal.com/api/",
         }
 
-        requests_mock.post(
-            "https://www.semsportal.com/api/v2/Common/CrossLogin", json=login_response
-        )
+        requests_mock.post(_LoginURL, json=login_response)
 
         result = self.api.test_authentication()
 
@@ -87,9 +87,7 @@ class TestSemsApiSimple:
             "api": "https://eu.semsportal.com/api/",
         }
 
-        requests_mock.post(
-            "https://www.semsportal.com/api/v2/Common/CrossLogin", json=login_response
-        )
+        requests_mock.post(_LoginURL, json=login_response)
 
         # Mock power station IDs response with real structure
         power_station_response = {
@@ -109,7 +107,7 @@ class TestSemsApiSimple:
         }
 
         requests_mock.post(
-            "https://eu.semsportal.com/api//PowerStation/GetPowerStationIdByOwner",
+            f"{_APIURL.rstrip('/')}{_GetPowerStationIdByOwnerURLPart}",
             json=power_station_response,
         )
 
