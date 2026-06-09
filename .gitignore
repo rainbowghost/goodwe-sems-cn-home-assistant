@@ -9,4 +9,7 @@ coverage.xml
 
 .mypy_cache
 .ruff_cache
+
+# Claude Code local state
 CLAUDE.md
+.claude/

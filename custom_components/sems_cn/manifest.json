@@ -1,0 +1,15 @@
+{
+  "domain": "sems_cn",
+  "name": "GoodWe SEMS CN API",
+  "codeowners": [
+    "@rainbowghost"
+  ],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/rainbowghost/goodwe-sems-cn-home-assistant",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/rainbowghost/goodwe-sems-cn-home-assistant/issues",
+  "loggers": ["custom_components.sems_cn"],
+  "requirements": [],
+  "version": "1.0.0"
+}

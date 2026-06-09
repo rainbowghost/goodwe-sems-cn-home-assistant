@@ -3,7 +3,7 @@
 import voluptuous as vol
 from homeassistant.const import CONF_PASSWORD, CONF_SCAN_INTERVAL, CONF_USERNAME
 
-DOMAIN = "sems"
+DOMAIN = "sems_cn"
 
 PLATFORMS = ["sensor", "switch"]
 

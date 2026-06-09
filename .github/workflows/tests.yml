@@ -2,9 +2,9 @@ name: Tests
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main ]
   pull_request:
-    # branches: [ main, master ]
+    # branches: [ main ]
   schedule:
     # Run tests daily at 6 AM UTC to catch dependency issues
     - cron: '0 6 * * *'
@@ -34,7 +34,7 @@ jobs:
 
     - name: Run tests with coverage
       run: |
-        pytest tests/ --cov=custom_components.sems --cov-report=xml --cov-report=term-missing -v
+        pytest tests/ --cov=custom_components.sems_cn --cov-report=xml --cov-report=term-missing -v
 
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v4

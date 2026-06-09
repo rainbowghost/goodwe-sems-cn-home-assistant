@@ -1,7 +1,7 @@
-"""Support for inverter control switches from the GoodWe SEMS API.
+"""Support for inverter control switches from the GoodWe SEMS CN API.
 
 For more details about this platform, please refer to the documentation at
-https://github.com/TimSoethout/goodwe-sems-home-assistant
+https://github.com/rainbowghost/goodwe-sems-cn-home-assistant
 """
 
 from __future__ import annotations

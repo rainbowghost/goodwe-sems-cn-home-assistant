@@ -28,7 +28,7 @@ If applicable, add screenshots to help explain your problem.
  - SEMS API component versions: [7.4.0]
 
 **Debug log messages**
-See https://github.com/TimSoethout/goodwe-sems-home-assistant?tab=readme-ov-file#debug-info
+See https://github.com/rainbowghost/goodwe-sems-cn-home-assistant?tab=readme-ov-file#debug-info
 Or enable debug logging in Integration settings. Stop debugging again to download logs.
 
 **Additional context**

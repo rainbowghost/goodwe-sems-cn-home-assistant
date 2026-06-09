@@ -9,9 +9,9 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.sems import SemsData
-from custom_components.sems.const import CONF_STATION_ID, DOMAIN
-from custom_components.sems.sensor import sensor_options_for_data
+from custom_components.sems_cn import SemsData
+from custom_components.sems_cn.const import CONF_STATION_ID, DOMAIN
+from custom_components.sems_cn.sensor import sensor_options_for_data
 
 from .fixtures import (
     MOCK_GET_DATA_ACTUAL_JSON,
@@ -69,7 +69,7 @@ async def test_sensor_state_from_coordinator(
     entry.add_to_hass(hass)
 
     with patch(
-        "custom_components.sems.sems_api.SemsApi.getData",
+        "custom_components.sems_cn.sems_api.SemsApi.getData",
         return_value=MOCK_GET_DATA_RESULT_MINIMAL,
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
@@ -130,7 +130,7 @@ async def test_unique_id_migration_sn_to_sn_power(
     ).entity_id
 
     with patch(
-        "custom_components.sems.sems_api.SemsApi.getData",
+        "custom_components.sems_cn.sems_api.SemsApi.getData",
         return_value=MOCK_GET_DATA_RESULT_MINIMAL,
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
@@ -176,7 +176,7 @@ async def test_unique_id_migration_powerflow_to_homekit_sn(
     }
 
     with patch(
-        "custom_components.sems.sems_api.SemsApi.getData",
+        "custom_components.sems_cn.sems_api.SemsApi.getData",
         return_value=MOCK_GET_DATA_HOMEKIT_ACTUAL_JSON,
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
@@ -218,7 +218,7 @@ async def test_all_entities_exist(
     entry.add_to_hass(hass)
 
     with patch(
-        "custom_components.sems.sems_api.SemsApi.getData",
+        "custom_components.sems_cn.sems_api.SemsApi.getData",
         return_value=MOCK_GET_DATA_ACTUAL_JSON["data"],
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
@@ -265,7 +265,7 @@ async def test_exact_unique_ids_single_inverter_fixture(
     entry.add_to_hass(hass)
 
     with patch(
-        "custom_components.sems.sems_api.SemsApi.getData",
+        "custom_components.sems_cn.sems_api.SemsApi.getData",
         return_value=MOCK_GET_DATA_ACTUAL_JSON["data"],
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
@@ -334,7 +334,7 @@ async def test_exact_unique_ids_homekit_powerflow_fixture(
     entry.add_to_hass(hass)
 
     with patch(
-        "custom_components.sems.sems_api.SemsApi.getData",
+        "custom_components.sems_cn.sems_api.SemsApi.getData",
         return_value=MOCK_GET_DATA_HOMEKIT_ACTUAL_JSON,
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
@@ -422,7 +422,7 @@ async def test_homekit_powerflow_values_from_api_fixture(
     entry.add_to_hass(hass)
 
     with patch(
-        "custom_components.sems.sems_api.SemsApi.getData",
+        "custom_components.sems_cn.sems_api.SemsApi.getData",
         return_value=MOCK_GET_DATA_HOMEKIT_ACTUAL_JSON,
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
@@ -640,7 +640,7 @@ async def test_homekit_sensors_handle_empty_strings_at_night(
     entry.add_to_hass(hass)
 
     with patch(
-        "custom_components.sems.sems_api.SemsApi.getData",
+        "custom_components.sems_cn.sems_api.SemsApi.getData",
         return_value=initial_data,
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
@@ -694,7 +694,7 @@ async def test_homekit_sensors_handle_empty_strings_at_night(
     # Update coordinator data with nighttime empty strings
     coordinator = entry.runtime_data.coordinator
     with patch(
-        "custom_components.sems.sems_api.SemsApi.getData",
+        "custom_components.sems_cn.sems_api.SemsApi.getData",
         return_value=nighttime_data,
     ):
         await coordinator.async_refresh()

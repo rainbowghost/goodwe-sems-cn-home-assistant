@@ -1,7 +1,7 @@
 {
-  "name": "GoodWe SEMS API",
+  "name": "GoodWe SEMS CN API",
   "content_in_root": false,
   "zip_release": true,
-  "filename": "sems.zip",
+  "filename": "sems_cn.zip",
   "homeassistant": "2025.5.1"
 }

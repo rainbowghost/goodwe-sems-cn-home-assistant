@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
-import base64
 from typing import Any
 
 import requests
@@ -26,6 +26,7 @@ _DefaultHeaders = {
     "Accept": "application/json",
     "token": '{"uid":"","timestamp":0,"token":"","client":"web","version":"","language":"zh-TW"}',
 }
+
 
 class SemsApi:
     """Interface to the SEMS API."""
@@ -107,9 +108,15 @@ class SemsApi:
         """Get the login token for the SEMS API."""
         try:
             # Prepare Login Data to retrieve Authentication Token
-            encoded_username = base64.b64encode(userName.encode("utf-8")).decode("utf-8")
-            encoded_password = base64.b64encode(password.encode("utf-8")).decode("utf-8")
-            login_data = json.dumps({"account": encoded_username, "pwd": encoded_password})
+            encoded_username = base64.b64encode(userName.encode("utf-8")).decode(
+                "utf-8"
+            )
+            encoded_password = base64.b64encode(password.encode("utf-8")).decode(
+                "utf-8"
+            )
+            login_data = json.dumps(
+                {"account": encoded_username, "pwd": encoded_password}
+            )
 
             jsonResponse = self._make_http_request(
                 _LoginURL,
