@@ -13,6 +13,3 @@ coverage.xml
 # Claude Code local state
 CLAUDE.md
 .claude/
-
-# PR staging area (for home-assistant/brands PR)
-_pr_brands/
