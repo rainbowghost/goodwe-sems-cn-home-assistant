@@ -23,6 +23,8 @@ from .sems_api import SemsApi, SemsRateLimitedError
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
+_MISSING = object()
+
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
@@ -35,6 +37,7 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 # The new SEMS+ plant API returns "factor groups" (arrays of
 # {"code", "data", "unit", ...}), so the coordinator flattens them into
 # the legacy key shape. This preserves all existing entity unique_ids.
+
 
 @dataclass(slots=True)
 class SemsRuntimeData:
@@ -51,9 +54,9 @@ type SemsConfigEntry = ConfigEntry[SemsRuntimeData]
 class SemsData:
     """Coordinator payload shape consumed by sensors / switch."""
 
-    inverters: dict[str, dict[str, Any]]      # SN → flattened factor dict
-    homekit: dict[str, Any] | None = None    # always None for SEMS+ plant API
-    currency: str | None = None               # not exposed by plant API
+    inverters: dict[str, dict[str, Any]]  # SN → flattened factor dict
+    homekit: dict[str, Any] | None = None  # always None for SEMS+ plant API
+    currency: str | None = None  # not exposed by plant API
 
 
 async def async_setup(hass: HomeAssistant, config: dict):
@@ -86,9 +89,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: SemsConfigEntry) -> boo
 class SemsDataUpdateCoordinator(DataUpdateCoordinator[SemsData]):
     """Polls the SEMS+ plant API and flattens results into SemsData."""
 
-    def __init__(
-        self, hass: HomeAssistant, api: SemsApi, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, hass: HomeAssistant, api: SemsApi, entry: ConfigEntry) -> None:
         self.api = api
         update_interval = timedelta(
             seconds=entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
@@ -138,16 +139,14 @@ class SemsDataUpdateCoordinator(DataUpdateCoordinator[SemsData]):
             for entry in devices:
                 if entry.get("deviceType") != "INVERTER":
                     continue
-                sn_list = (
-                    entry.get("statusDetailList", [{}])[0].get("snList") or []
-                )
+                sn_list = entry.get("statusDetailList", [{}])[0].get("snList") or []
                 if not sn_list:
                     continue
                 sn = sn_list[0]
-                detail = (
-                    entry.get("detailMap", {}).get(sn) or {}
-                )
-                status = (detail.get("status") if isinstance(detail, dict) else None) or 0
+                detail = entry.get("detailMap", {}).get(sn) or {}
+                status = (
+                    detail.get("status") if isinstance(detail, dict) else None
+                ) or 0
 
                 # Per-inverter refresh.
                 telecounting = self.api.get_telecounting(sn, station_id) or []
@@ -216,6 +215,28 @@ def _flatten_inverter(
         """Pass-through; legacy sensors handle string→Decimal themselves."""
         return value
 
+    def factor_value(factors: dict[str, Any], code: str) -> Any:
+        """Return a factor value, preserving the difference between absent and null."""
+        return factors[code] if code in factors else _MISSING
+
+    def first_non_empty_factor(*values: Any) -> Any:
+        """Return the first non-empty factor, while preserving present empties.
+
+        Some values, notably pAc, can be exposed by both telemetry and
+        telecounting. Prefer the first usable value, but if all present values
+        are null/empty, return a present empty value so power normalization can
+        turn it into 0 W. If no source contains the factor, keep it missing.
+        """
+        first_empty = _MISSING
+        for value in values:
+            if value is _MISSING:
+                continue
+            if first_empty is _MISSING:
+                first_empty = value
+            if value is not None and value != "":
+                return value
+        return first_empty
+
     def kw_to_w(value: Any) -> Any:
         """Convert a kW / kVar value to W / var so the legacy sensor
         (whose native_unit_of_measurement is WATT / VAR) reads the same
@@ -223,11 +244,20 @@ def _flatten_inverter(
 
         The plant API reports active / reactive / per-MPPT power in kW,
         whereas the legacy API returned watts. Multiplying by 1000 keeps
-        the value stable for users who upgrade from v1.x. ``None`` and
-        unparsable values pass through unchanged.
+        the value stable for users who upgrade from v1.x.
+
+        When the inverter is offline, the plant API returns null or an empty
+        string for live power factors such as pAc while still declaring the
+        unit as kW. Treat present-but-empty power factors as zero so Home
+        Assistant shows 0 W instead of an unavailable power entity. Missing
+        factors and unparsable non-empty values pass through unchanged.
         """
-        if value is None or value == "":
+        if value is _MISSING:
             return value
+        if value is None:
+            return "0"
+        if value == "":
+            return "0"
         try:
             return str(float(value) * 1000.0)
         except (TypeError, ValueError):
@@ -235,7 +265,7 @@ def _flatten_inverter(
 
     flat: dict[str, Any] = {
         "sn": sn,
-        "name": sn,                              # legacy used inverter name; fall back to SN
+        "name": sn,  # legacy used inverter name; fall back to SN
         "status": num(status),
         # telecounting (power & history)
         "capacity": num(tc.get("ratedPower")),
@@ -244,8 +274,10 @@ def _flatten_inverter(
         "hour_total": num(tl.get("hTotal")),
         "thismonthetotle": num(tc.get("proPvStatsMonth")),
         # telemetry (live operating data) — kW / kVar factors converted to W / var
-        "pac": kw_to_w(tl.get("pAc")),
-        "qac": kw_to_w(tl.get("qAc")),
+        "pac": kw_to_w(
+            first_non_empty_factor(factor_value(tl, "pAc"), factor_value(tc, "pAc"))
+        ),
+        "qac": kw_to_w(factor_value(tl, "qAc")),
         "temperature": num(tl.get("Temperature")),
         "gridpf": num(tl.get("gridPF")),
         "fac": num(tl.get("Fac")),
@@ -261,21 +293,21 @@ def _flatten_inverter(
         "vpv2": num(tl.get("MPPT-2:Vpv")),
         "ipv1": num(tl.get("MPPT-1:Ipv")),
         "ipv2": num(tl.get("MPPT-2:Ipv")),
-        "ppv1": kw_to_w(tl.get("MPPT-1:Ppv")),
-        "ppv2": kw_to_w(tl.get("MPPT-2:Ppv")),
+        "ppv1": kw_to_w(factor_value(tl, "MPPT-1:Ppv")),
+        "ppv2": kw_to_w(factor_value(tl, "MPPT-2:Ppv")),
         # Pass-through for any MPPT-3 / MPPT-4 on 4-MPPT inverters.
         "vpv3": num(tl.get("MPPT-3:Vpv")),
         "vpv4": num(tl.get("MPPT-4:Vpv")),
         "ipv3": num(tl.get("MPPT-3:Ipv")),
         "ipv4": num(tl.get("MPPT-4:Ipv")),
-        "ppv3": kw_to_w(tl.get("MPPT-3:Ppv")),
-        "ppv4": kw_to_w(tl.get("MPPT-4:Ppv")),
+        "ppv3": kw_to_w(factor_value(tl, "MPPT-3:Ppv")),
+        "ppv4": kw_to_w(factor_value(tl, "MPPT-4:Ppv")),
         # Battery (single-battery fallback path for hybrid inverters)
         "vbattery1": num(tl.get("batteryVoltage")),
         "ibattery1": num(tl.get("batteryCurrent")),
         "soc": num(tl.get("soc")),
         "soh": num(tl.get("soh")),
-        "pbattery": kw_to_w(tl.get("pBattery")),
+        "pbattery": kw_to_w(factor_value(tl, "pBattery")),
         # Station-level fields the legacy sensors used to read from
         # ``inverter_full``.
         "station_id": station.get("id"),
@@ -285,7 +317,7 @@ def _flatten_inverter(
 
     # Drop None values so legacy sensors' ``empty_value`` logic still works
     # for fields the new API doesn't return (e.g. income sensors).
-    return {k: v for k, v in flat.items() if v is not None}
+    return {k: v for k, v in flat.items() if v is not None and v is not _MISSING}
 
 
 # Type alias to make type inference working for pylance

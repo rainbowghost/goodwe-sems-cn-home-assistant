@@ -1,3 +1,18 @@
+## [2.0.5] - 2026-06-10
+
+### Fixed
+
+- **Offline power factor values**. The SEMS+ plant API can return `null`
+  or an empty string for live power factors (`pAc`, `qAc`,
+  `MPPT-N:Ppv`, `pBattery`) while still reporting power units. These
+  present-but-empty power values now normalize to `0` so Home
+  Assistant shows `0 W` instead of `unknown`.
+- **Active power fallback**. `pAc` now falls back from telemetry to the
+  telecounting payload when telemetry is empty, while still leaving
+  genuinely missing factors absent.
+
+[2.0.5]: https://github.com/rainbowghost/goodwe-sems-cn-home-assistant/releases/tag/v2.0.5
+
 ## [2.0.4] - 2026-06-10
 
 ### Fixed

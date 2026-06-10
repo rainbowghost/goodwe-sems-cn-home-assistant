@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 import pytest
 import requests
 
+from custom_components.sems_cn import _flatten_inverter
 from custom_components.sems_cn.sems_api import (
     _APP_VERSION,
     _LOGIN_URL,
@@ -66,7 +67,9 @@ def _stations_payload(station_id: str = MOCK_STATION_ID) -> dict:
     }
 
 
-def _devices_payload(sn: str = MOCK_INVERTER_SN, station_id: str = MOCK_STATION_ID) -> dict:
+def _devices_payload(
+    sn: str = MOCK_INVERTER_SN, station_id: str = MOCK_STATION_ID
+) -> dict:
     return {
         "code": "00000",
         "data": {
@@ -117,7 +120,9 @@ def _telecounting_payload() -> dict:
             {
                 "code": "telecounting_total",
                 "alias": "total",
-                "factors": [{"code": "proPvStatsTotal", "data": "17777.2", "unit": "kWh"}],
+                "factors": [
+                    {"code": "proPvStatsTotal", "data": "17777.2", "unit": "kWh"}
+                ],
             },
         ],
     }
@@ -165,6 +170,7 @@ class TestSignatures:
     def test_encode_signature_format(self):
         # Output must be base64, decode to "<64hex>@<digits>"
         import base64
+
         token = {"uid": "abc", "token": "xyz"}
         sig = _encode_signature(token)
         decoded = base64.b64decode(sig).decode()
@@ -172,6 +178,86 @@ class TestSignatures:
         hash_part, _, ts = decoded.rpartition("@")
         assert len(hash_part) == 64
         assert ts.isdigit()
+
+
+class TestFlattenInverter:
+    """Plant API factor flattening."""
+
+    def test_empty_live_power_is_zero_watts(self):
+        """Offline inverters can return empty strings for kW power factors."""
+        flat = _flatten_inverter(
+            sn=MOCK_INVERTER_SN,
+            station={"id": MOCK_STATION_ID, "name": "Test", "installedPower": 10},
+            status=0,
+            telecounting_groups=[],
+            telemetry_groups=[
+                {
+                    "code": "ac",
+                    "factors": [
+                        {"code": "pAc", "data": "", "unit": "kW"},
+                        {"code": "qAc", "data": "", "unit": "kVar"},
+                    ],
+                },
+                {
+                    "code": "pv",
+                    "factors": [{"code": "MPPT-1:Ppv", "data": "", "unit": "kW"}],
+                },
+            ],
+        )
+
+        assert flat["pac"] == "0"
+        assert flat["qac"] == "0"
+        assert flat["ppv1"] == "0"
+
+    def test_null_live_power_is_zero_watts_without_creating_missing_fields(self):
+        """Offline inverters can return null for present power factors."""
+        flat = _flatten_inverter(
+            sn=MOCK_INVERTER_SN,
+            station={"id": MOCK_STATION_ID, "name": "Test", "installedPower": 10},
+            status=0,
+            telecounting_groups=[],
+            telemetry_groups=[
+                {
+                    "code": "ac",
+                    "factors": [
+                        {"code": "pAc", "data": None, "unit": "kW"},
+                        {"code": "qAc", "data": None, "unit": "kVar"},
+                    ],
+                },
+                {
+                    "code": "pv",
+                    "factors": [{"code": "MPPT-1:Ppv", "data": None, "unit": "kW"}],
+                },
+            ],
+        )
+
+        assert flat["pac"] == "0"
+        assert flat["qac"] == "0"
+        assert flat["ppv1"] == "0"
+        assert "ppv2" not in flat
+        assert "pbattery" not in flat
+
+    def test_power_uses_telecounting_fallback_when_telemetry_is_empty(self):
+        """pAc can appear in both telemetry and telecounting groups."""
+        flat = _flatten_inverter(
+            sn=MOCK_INVERTER_SN,
+            station={"id": MOCK_STATION_ID, "name": "Test", "installedPower": 10},
+            status=5,
+            telecounting_groups=[
+                {
+                    "code": "telecounting_real",
+                    "factors": [{"code": "pAc", "data": "6.895", "unit": "kW"}],
+                }
+            ],
+            telemetry_groups=[
+                {
+                    "code": "ac",
+                    "factors": [{"code": "pAc", "data": None, "unit": "kW"}],
+                }
+            ],
+        )
+
+        assert flat["pac"] == "6895.0"
 
 
 class TestSemsApiUnit:
@@ -254,6 +340,7 @@ class TestSemsApiUnit:
         assert "x-signature" in headers
         # Verify x-signature decodes to "<hash>@<ms>"
         import base64
+
         decoded = base64.b64decode(headers["x-signature"]).decode()
         assert "@" in decoded
 
@@ -364,16 +451,22 @@ class TestSemsApiUnit:
 
         # First call: C0602 (stale token). Second call (after re-login):
         # success. Login is mocked so the test stays offline.
-        with patch.object(
-            self.api, "_login", return_value=_token_dict("fresh-token")
-        ) as mock_login, patch.object(
-            self.api, "_do_http", side_effect=[
-                {"code": "C0602", "msg": "account login abnormal"},
-                {"code": "00000", "data": ["ok"]},
-            ]
-        ) as mock_http:
+        with (
+            patch.object(
+                self.api, "_login", return_value=_token_dict("fresh-token")
+            ) as mock_login,
+            patch.object(
+                self.api,
+                "_do_http",
+                side_effect=[
+                    {"code": "C0602", "msg": "account login abnormal"},
+                    {"code": "00000", "data": ["ok"]},
+                ],
+            ) as mock_http,
+        ):
             resp = self.api._request(
-                "POST", "https://hz-gateway.sems.com.cn/web/sems/x",
+                "POST",
+                "https://hz-gateway.sems.com.cn/web/sems/x",
             )
 
         assert resp == {"code": "00000", "data": ["ok"]}
@@ -388,12 +481,17 @@ class TestSemsApiUnit:
         """C0602 on the login call itself should not trigger another login
         (would loop forever). The call returns None."""
         self.api._token = None
-        with patch.object(
-            self.api, "_do_http",
-            return_value={"code": "C0602", "msg": "bad creds"},
-        ) as mock_http, patch.object(self.api, "_login") as mock_login:
+        with (
+            patch.object(
+                self.api,
+                "_do_http",
+                return_value={"code": "C0602", "msg": "bad creds"},
+            ) as mock_http,
+            patch.object(self.api, "_login") as mock_login,
+        ):
             resp = self.api._request(
-                "POST", _LOGIN_URL,
+                "POST",
+                _LOGIN_URL,
                 headers={"token": "empty"},
             )
         assert resp is None
@@ -454,14 +552,13 @@ class TestSemsApiIntegration:
             json=_telemetry_payload(),
         )
         groups = self.api.get_telemetry(MOCK_INVERTER_SN, MOCK_STATION_ID)
-        assert groups and any(
-            g["code"] == "system" for g in groups
-        )
+        assert groups and any(g["code"] == "system" for g in groups)
 
     def test_change_status_returns_true_on_2xx(self, requests_mock):
         requests_mock.post(
             "https://hz-gateway.sems.com.cn/web/sems/PowerStation/SaveRemoteControlInverter",
-            json={"code": "00000"}, status_code=200,
+            json={"code": "00000"},
+            status_code=200,
         )
         assert self.api.change_status(MOCK_INVERTER_SN, "2") is True
 

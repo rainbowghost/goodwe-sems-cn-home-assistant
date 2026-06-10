@@ -13,3 +13,6 @@ coverage.xml
 # Claude Code local state
 CLAUDE.md
 .claude/
+
+# Local agent instructions
+AGENTS.md
