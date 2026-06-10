@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.0.1] - 2026-06-10
+
+### Fixed
+
+- **Power sensor unit conversion**. The new SEMS+ plant API reports
+  `pAc` (active power), `qAc` (reactive power), `MPPT-N:Ppv` (per-MPPT
+  power) and `pBattery` (battery power) in **kW / kVar**, but the
+  legacy sensors report their `native_unit_of_measurement` as **W / var**.
+  v2.0.0 stored the kW value verbatim, so HA displayed e.g.
+  `pac = 2.587 W` instead of the expected `2587 W`. v2.0.1 multiplies
+  the affected factors by 1000 in the coordinator
+  (`__init__.py::_flatten_inverter`) before they reach the sensor
+  layer, restoring the v1.x magnitude for active / reactive / per-MPPT
+  power. `capacity`, energy, voltage, current and temperature were
+  already in the right unit and are unchanged.
+- Live-verified: `pac` now reports `2587 W` (was `2.587 W`), `ppv1`
+  reports `1627 W` (was `1.627 W`).
+
 ## [2.0.0] - 2026-06-10
 
 ### Changed
@@ -112,6 +130,7 @@ at v9.1.1.
 - All v9.1.x modifications to support the China region API were contributed
   under the same MIT terms.
 
+[2.0.1]: https://github.com/rainbowghost/goodwe-sems-cn-home-assistant/releases/tag/v2.0.1
 [2.0.0]: https://github.com/rainbowghost/goodwe-sems-cn-home-assistant/releases/tag/v2.0.0
 [1.0.1]: https://github.com/rainbowghost/goodwe-sems-cn-home-assistant/releases/tag/v1.0.1
 [1.0.0]: https://github.com/rainbowghost/goodwe-sems-cn-home-assistant/releases/tag/v1.0.0

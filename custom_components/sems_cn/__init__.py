@@ -216,6 +216,23 @@ def _flatten_inverter(
         """Pass-through; legacy sensors handle string→Decimal themselves."""
         return value
 
+    def kw_to_w(value: Any) -> Any:
+        """Convert a kW / kVar value to W / var so the legacy sensor
+        (whose native_unit_of_measurement is WATT / VAR) reads the same
+        magnitude the old gopsapi API returned.
+
+        The plant API reports active / reactive / per-MPPT power in kW,
+        whereas the legacy API returned watts. Multiplying by 1000 keeps
+        the value stable for users who upgrade from v1.x. ``None`` and
+        unparsable values pass through unchanged.
+        """
+        if value is None or value == "":
+            return value
+        try:
+            return str(float(value) * 1000.0)
+        except (TypeError, ValueError):
+            return value
+
     flat: dict[str, Any] = {
         "sn": sn,
         "name": sn,                              # legacy used inverter name; fall back to SN
@@ -227,10 +244,10 @@ def _flatten_inverter(
         "hour_total": num(tl.get("hTotal")),
         "thismonthetotle": num(tc.get("proPvStatsMonth")),
         "lastmonthetotle": num(tc.get("proPvStatsLastMonth")),
-        # telemetry (live operating data)
-        "pac": num(tl.get("pAc")),
+        # telemetry (live operating data) — kW / kVar factors converted to W / var
+        "pac": kw_to_w(tl.get("pAc")),
+        "qac": kw_to_w(tl.get("qAc")),
         "temperature": num(tl.get("Temperature")),
-        "qac": num(tl.get("qAc")),
         "gridpf": num(tl.get("gridPF")),
         "fac": num(tl.get("Fac")),
         # Three-phase voltages / currents (AC group)
@@ -245,21 +262,21 @@ def _flatten_inverter(
         "vpv2": num(tl.get("MPPT-2:Vpv")),
         "ipv1": num(tl.get("MPPT-1:Ipv")),
         "ipv2": num(tl.get("MPPT-2:Ipv")),
-        "ppv1": num(tl.get("MPPT-1:Ppv")),
-        "ppv2": num(tl.get("MPPT-2:Ppv")),
+        "ppv1": kw_to_w(tl.get("MPPT-1:Ppv")),
+        "ppv2": kw_to_w(tl.get("MPPT-2:Ppv")),
         # Pass-through for any MPPT-3 / MPPT-4 on 4-MPPT inverters.
         "vpv3": num(tl.get("MPPT-3:Vpv")),
         "vpv4": num(tl.get("MPPT-4:Vpv")),
         "ipv3": num(tl.get("MPPT-3:Ipv")),
         "ipv4": num(tl.get("MPPT-4:Ipv")),
-        "ppv3": num(tl.get("MPPT-3:Ppv")),
-        "ppv4": num(tl.get("MPPT-4:Ppv")),
+        "ppv3": kw_to_w(tl.get("MPPT-3:Ppv")),
+        "ppv4": kw_to_w(tl.get("MPPT-4:Ppv")),
         # Battery (single-battery fallback path for hybrid inverters)
         "vbattery1": num(tl.get("batteryVoltage")),
         "ibattery1": num(tl.get("batteryCurrent")),
         "soc": num(tl.get("soc")),
         "soh": num(tl.get("soh")),
-        "pbattery": num(tl.get("pBattery")),
+        "pbattery": kw_to_w(tl.get("pBattery")),
         # Station-level fields the legacy sensors used to read from
         # ``inverter_full``.
         "station_id": station.get("id"),
