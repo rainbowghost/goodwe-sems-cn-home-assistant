@@ -259,6 +259,45 @@ class TestFlattenInverter:
 
         assert flat["pac"] == "6895.0"
 
+    def test_null_live_voltage_current_and_frequency_are_zero(self):
+        """Offline inverters can return null for present electrical factors."""
+        flat = _flatten_inverter(
+            sn=MOCK_INVERTER_SN,
+            station={"id": MOCK_STATION_ID, "name": "Test", "installedPower": 10},
+            status=0,
+            telecounting_groups=[],
+            telemetry_groups=[
+                {
+                    "code": "ac",
+                    "factors": [
+                        {"code": "Fac", "data": None, "unit": "Hz"},
+                        {"code": "PHASE-A:Vac", "data": None, "unit": "V"},
+                        {"code": "PHASE-A:Iac", "data": None, "unit": "A"},
+                    ],
+                },
+                {
+                    "code": "pv",
+                    "factors": [
+                        {"code": "MPPT-1:Vpv", "data": None, "unit": "V"},
+                        {"code": "MPPT-1:Ipv", "data": None, "unit": "A"},
+                    ],
+                },
+                {
+                    "code": "system",
+                    "factors": [{"code": "Temperature", "data": None, "unit": "C"}],
+                },
+            ],
+        )
+
+        assert flat["fac"] == "0"
+        assert flat["vac1"] == "0"
+        assert flat["iac1"] == "0"
+        assert flat["vpv1"] == "0"
+        assert flat["ipv1"] == "0"
+        assert "temperature" not in flat
+        assert "vac2" not in flat
+        assert "ipv2" not in flat
+
 
 class TestSemsApiUnit:
     """Request-level unit tests."""

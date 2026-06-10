@@ -237,6 +237,14 @@ def _flatten_inverter(
                 return value
         return first_empty
 
+    def zero_when_empty(value: Any) -> Any:
+        """Return 0 for present-but-empty live electrical measurements."""
+        if value is _MISSING:
+            return value
+        if value is None or value == "":
+            return "0"
+        return value
+
     def kw_to_w(value: Any) -> Any:
         """Convert a kW / kVar value to W / var so the legacy sensor
         (whose native_unit_of_measurement is WATT / VAR) reads the same
@@ -252,12 +260,11 @@ def _flatten_inverter(
         Assistant shows 0 W instead of an unavailable power entity. Missing
         factors and unparsable non-empty values pass through unchanged.
         """
+        value = zero_when_empty(value)
         if value is _MISSING:
             return value
-        if value is None:
-            return "0"
-        if value == "":
-            return "0"
+        if value == "0":
+            return value
         try:
             return str(float(value) * 1000.0)
         except (TypeError, ValueError):
@@ -280,26 +287,26 @@ def _flatten_inverter(
         "qac": kw_to_w(factor_value(tl, "qAc")),
         "temperature": num(tl.get("Temperature")),
         "gridpf": num(tl.get("gridPF")),
-        "fac": num(tl.get("Fac")),
+        "fac": zero_when_empty(factor_value(tl, "Fac")),
         # Three-phase voltages / currents (AC group)
-        "vac1": num(tl.get("PHASE-A:Vac")),
-        "vac2": num(tl.get("PHASE-B:Vac")),
-        "vac3": num(tl.get("PHASE-C:Vac")),
-        "iac1": num(tl.get("PHASE-A:Iac")),
-        "iac2": num(tl.get("PHASE-B:Iac")),
-        "iac3": num(tl.get("PHASE-C:Iac")),
+        "vac1": zero_when_empty(factor_value(tl, "PHASE-A:Vac")),
+        "vac2": zero_when_empty(factor_value(tl, "PHASE-B:Vac")),
+        "vac3": zero_when_empty(factor_value(tl, "PHASE-C:Vac")),
+        "iac1": zero_when_empty(factor_value(tl, "PHASE-A:Iac")),
+        "iac2": zero_when_empty(factor_value(tl, "PHASE-B:Iac")),
+        "iac3": zero_when_empty(factor_value(tl, "PHASE-C:Iac")),
         # MPPT PV inputs (PV group)
-        "vpv1": num(tl.get("MPPT-1:Vpv")),
-        "vpv2": num(tl.get("MPPT-2:Vpv")),
-        "ipv1": num(tl.get("MPPT-1:Ipv")),
-        "ipv2": num(tl.get("MPPT-2:Ipv")),
+        "vpv1": zero_when_empty(factor_value(tl, "MPPT-1:Vpv")),
+        "vpv2": zero_when_empty(factor_value(tl, "MPPT-2:Vpv")),
+        "ipv1": zero_when_empty(factor_value(tl, "MPPT-1:Ipv")),
+        "ipv2": zero_when_empty(factor_value(tl, "MPPT-2:Ipv")),
         "ppv1": kw_to_w(factor_value(tl, "MPPT-1:Ppv")),
         "ppv2": kw_to_w(factor_value(tl, "MPPT-2:Ppv")),
         # Pass-through for any MPPT-3 / MPPT-4 on 4-MPPT inverters.
-        "vpv3": num(tl.get("MPPT-3:Vpv")),
-        "vpv4": num(tl.get("MPPT-4:Vpv")),
-        "ipv3": num(tl.get("MPPT-3:Ipv")),
-        "ipv4": num(tl.get("MPPT-4:Ipv")),
+        "vpv3": zero_when_empty(factor_value(tl, "MPPT-3:Vpv")),
+        "vpv4": zero_when_empty(factor_value(tl, "MPPT-4:Vpv")),
+        "ipv3": zero_when_empty(factor_value(tl, "MPPT-3:Ipv")),
+        "ipv4": zero_when_empty(factor_value(tl, "MPPT-4:Ipv")),
         "ppv3": kw_to_w(factor_value(tl, "MPPT-3:Ppv")),
         "ppv4": kw_to_w(factor_value(tl, "MPPT-4:Ppv")),
         # Battery (single-battery fallback path for hybrid inverters)

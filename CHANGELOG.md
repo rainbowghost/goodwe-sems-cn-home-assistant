@@ -1,3 +1,17 @@
+## [2.0.6] - 2026-06-10
+
+### Fixed
+
+- **Offline PV/AC electrical values**. The SEMS+ plant API can return
+  `null` or an empty string for present live voltage/current/frequency
+  factors while an inverter is offline. Present-but-empty `MPPT-N:Vpv`,
+  `MPPT-N:Ipv`, `PHASE-*:Vac`, `PHASE-*:Iac`, and `Fac` values now
+  normalize to `0`, so Home Assistant shows `0 V`, `0 A`, or `0 Hz`
+  instead of `unknown`. Temperature remains unavailable when the API
+  does not provide it.
+
+[2.0.6]: https://github.com/rainbowghost/goodwe-sems-cn-home-assistant/releases/tag/v2.0.6
+
 ## [2.0.5] - 2026-06-10
 
 ### Fixed
