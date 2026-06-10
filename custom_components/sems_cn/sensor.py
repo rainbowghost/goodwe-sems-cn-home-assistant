@@ -40,7 +40,6 @@ from .const import (
     AC_EMPTY,
     AC_FEQ_EMPTY,
     DOMAIN,
-    GOODWE_SPELLING,
     STATUS_LABELS,
 )
 from .device import device_info_for_inverter
@@ -170,7 +169,7 @@ def sensor_options_for_data(
             SemsInverterSensorType(
                 device_info,
                 f"{serial_number}-temperature",
-                [*path_to_inverter, GOODWE_SPELLING.temperature],
+                [*path_to_inverter, "temperature"],
                 device_class=SensorDeviceClass.TEMPERATURE,
                 native_unit_of_measurement=UnitOfTemperature.CELSIUS,
                 state_class=SensorStateClass.MEASUREMENT,
@@ -187,8 +186,8 @@ def sensor_options_for_data(
             ),
             SemsInverterSensorType(
                 device_info,
-                f"{serial_number}-{GOODWE_SPELLING.thisMonthTotalE}",
-                [*path_to_inverter, GOODWE_SPELLING.thisMonthTotalE],
+                f"{serial_number}-thismonthetotle",
+                [*path_to_inverter, "thismonthetotle"],
                 "Energy This Month",
                 SensorDeviceClass.ENERGY,
                 UnitOfEnergy.KILO_WATT_HOUR,
@@ -196,8 +195,8 @@ def sensor_options_for_data(
             ),
             SemsInverterSensorType(
                 device_info,
-                f"{serial_number}-{GOODWE_SPELLING.lastMonthTotalE}",
-                [*path_to_inverter, GOODWE_SPELLING.lastMonthTotalE],
+                f"{serial_number}-lastmonthetotle",
+                [*path_to_inverter, "lastmonthetotle"],
                 "Energy Last Month",
                 SensorDeviceClass.ENERGY,
                 UnitOfEnergy.KILO_WATT_HOUR,
@@ -488,13 +487,13 @@ def sensor_options_for_data(
             SemsHomekitSensorType(
                 device_info,
                 f"{homekit_sn}-battery",
-                [GOODWE_SPELLING.battery],
+                ["bettery"],
                 "HomeKit Battery",
                 SensorDeviceClass.POWER,
                 UnitOfPower.WATT,
                 SensorStateClass.MEASUREMENT,
                 custom_value_handler=status_value_handler(
-                    [GOODWE_SPELLING.batteryStatus]
+                    ["betteryStatus"]
                 ),
             ),
             SemsHomekitSensorType(
@@ -516,7 +515,7 @@ def sensor_options_for_data(
                 SensorStateClass.MEASUREMENT,
             ),
         ]
-        if data.homekit.get(GOODWE_SPELLING.hasEnergyStatisticsCharts):
+        if data.homekit.get("hasEnergeStatisticsCharts"):
             if data.homekit.get("Charts_buy") is not None:
                 sensors += [
                     SemsHomekitSensorType(

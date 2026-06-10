@@ -1,8 +1,32 @@
+"""SEMS+ plant API client for the CN region.
+
+Reverse-engineered from the SEMS+ web frontend's network traffic. Algorithm
+documented at ``E:/MyCode/sems-plus-api.md`` (and the user's session captures
+at ``E:/MyCode/semsplus.txt`` / ``E:/Code/semsplusweb.txt``).
+
+Flow:
+    1. POST cross-login at ``semsplus.goodwe.com`` with
+       ``isChinese:true, isLocal:true`` → returns a token whose ``data.api``
+       field points at the regional CN gateway (``hz-gateway.sems.com.cn``).
+    2. POST /sems-plant/api/app/v2/stations/page  → station list
+       (use ``simple-query`` instead when the user agent is web).
+    3. GET  /sems-plant/api/stations/device/all-status?stationId=… → SN list
+    4. GET  /sems-plant/api/equipments/{SN}/telecounting?… → power & history
+    5. GET  /sems-plant/api/equipments/{SN}/telemetry?…     → live data
+    6. POST /PowerStation/SaveRemoteControlInverter → inverter on/off
+
+Every plant call carries a freshly-computed ``x-signature =
+base64(sha256(now_ms@uid@token) + "@" + now_ms)`` header — same
+anti-replay scheme upstream uses.
+"""
+
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
+import time
 from typing import Any
 
 import requests
@@ -11,317 +35,346 @@ from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
 
-_LoginURL = "https://gopsapi.sems.com.cn/api/auth/gettoken"
-_APIURL = "https://gopsapi.sems.com.cn/api/"
-_GetPowerStationIdByOwnerURLPart = "/PowerStation/GetPowerStationIdByOwner"
-_PowerStationURLPart = "/v1/PowerStation/GetMonitorDetailByPowerstationId"
-# _PowerControlURL = (
-#     "https://www.semsportal.com/api/PowerStation/SaveRemoteControlInverter"
-# )
-_PowerControlURLPart = "/PowerStation/SaveRemoteControlInverter"
-_RequestTimeout = 30  # seconds
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+_LOGIN_URL = "https://semsplus.goodwe.com/web/sems/sems-user/api/v1/auth/cross-login"
+_STATIONS_PATH_ANDROID = "/sems-plant/api/app/v2/stations/page"
+_STATIONS_PATH_WEB = "/sems-plant/api/stations/simple-query"
+_DEVICE_PATH = "/sems-plant/api/stations/device/all-status"
+_TELECOUNTING_PATH = "/sems-plant/api/equipments/{sn}/telecounting"
+_TELEMETRY_PATH = "/sems-plant/api/equipments/{sn}/telemetry"
+_POWER_CONTROL_PATH = "/PowerStation/SaveRemoteControlInverter"
 
-_DefaultHeaders = {
-    "Content-Type": "application/json",
-    "Accept": "application/json",
-    "token": '{"uid":"","timestamp":0,"token":"","client":"web","version":"","language":"zh-TW"}',
+_REQUEST_TIMEOUT = 30  # seconds
+
+# Login defaults for the empty token header (uid/timestamp/token are
+# zero/empty when no session exists yet).
+_LOGIN_TOKEN_ANDROID = {
+    "uid": "",
+    "timestamp": 0,
+    "token": "",
+    "client": "semsPlusAndroid",
+    "version": "2.5.2",
+    "language": "zh-CN",
 }
+
+_APP_VERSION = "2.5.3"  # current GoodWe mobile/web app version
+
+_USER_AGENT_ANDROID = "okhttp/4.9.3"
+
+# ---------------------------------------------------------------------------
+# Rate limiting (from upstream v10.x + observed CN behavior)
+# ---------------------------------------------------------------------------
+_SUCCESS_CODES = {"0", 0, "00000"}
+_RATE_LIMIT_CODE = "GY0429"               # returned by SEMS+ globally
+_NO_ACCESS_CODE = "100025"               # observed on CN plant endpoints
+_RATE_LIMIT_RETRY_AFTER = 300            # seconds
+_MAX_TOKEN_RETRIES = 2
+
+
+def _md5_then_base64(text: str) -> str:
+    """SEMS+ password encoding: base64(md5_hex_string(plain_password))."""
+    md5_hex = hashlib.md5(text.encode("utf-8")).hexdigest()
+    return base64.b64encode(md5_hex.encode("utf-8")).decode("ascii")
+
+
+def _password_for_login(plain: str) -> str:
+    """Plaintext password → ``pwd`` field for cross-login."""
+    return _md5_then_base64(plain)
+
+
+def _encode_signature(token: dict[str, Any]) -> str:
+    """Reverse-engineered SEMS+ web ``encodeSignature()``.
+
+    Same algorithm for login + every plant call:
+        r = current unix ms
+        a = token.uid  (empty string for login)
+        i = token.token (empty string for login)
+        sig = base64(sha256(r@a@i) + "@" + r)
+    """
+    r = time.time_ns() // 1_000_000
+    a = token.get("uid", "")
+    i = token.get("token", "")
+    h = hashlib.sha256(f"{r}@{a}@{i}".encode()).hexdigest()
+    return base64.b64encode(f"{h}@{r}".encode()).decode()
+
+
+def _fresh_traceid() -> str:
+    """Per-request trace id. Server uses it to correlate calls; any
+    unique hex string works."""
+    import uuid
+    return str(uuid.uuid4()).replace("-", "")
+
+
+def _build_headers(
+    token: dict[str, Any],
+    *,
+    with_content_type: bool = False,
+    traceid: str | None = None,
+) -> dict[str, str]:
+    """Headers used for every authenticated plant call.
+
+    Login itself also uses these (with the empty ``_LOGIN_TOKEN_*`` token
+    dict), plus ``Content-Type`` when posting a body.
+    """
+    h = {
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8",
+        "User-Agent": _USER_AGENT_ANDROID,
+        "currentlang": "zh-CN",
+        "neutral": "0",
+        "appversion": _APP_VERSION,
+        "traceid": traceid or _fresh_traceid(),
+        "token": json.dumps(token, separators=(",", ":")),
+        "x-signature": _encode_signature(token),
+    }
+    if with_content_type:
+        h["Content-Type"] = "application/json"
+    return h
+
+
+def _redact_for_log(value: Any) -> Any:
+    """Best-effort log redaction for tokens / passwords. Mirrors the helper
+    upstream ships so debug logs don't leak credentials."""
+    if isinstance(value, str):
+        if "token" in value.lower() or len(value) > 32:
+            return "<redacted>"
+        return value
+    if isinstance(value, dict):
+        return {k: _redact_for_log(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_for_log(v) for v in value]
+    return value
+
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+
+class OutOfRetries(exceptions.HomeAssistantError):
+    """Error to indicate too many failed token retries."""
+
+
+class SemsRateLimitedError(exceptions.HomeAssistantError):
+    """Error to indicate the SEMS API requested a backoff.
+
+    Raised on either ``GY0429`` (global rate limit) or ``100025`` (CN
+    plant endpoint: token expired or scope rejected).
+    """
+
+    def __init__(self, retry_after: int, message: str = "SEMS API rate limited"):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+# ---------------------------------------------------------------------------
+# Client
+# ---------------------------------------------------------------------------
 
 
 class SemsApi:
-    """Interface to the SEMS API."""
+    """Interface to the SEMS+ plant API for the CN region."""
 
     def __init__(self, hass: HomeAssistant, username: str, password: str) -> None:
-        """Init dummy hub."""
         self._hass = hass
         self._username = username
         self._password = password
         self._token: dict[str, Any] | None = None
 
+    # ----- public ------------------------------------------------------------
+
     def test_authentication(self) -> bool:
-        """Test if we can authenticate with the host."""
+        """Login probe used by the config flow."""
         try:
-            self._token = self.getLoginToken(self._username, self._password)
-        except Exception as exception:
-            _LOGGER.exception("SEMS Authentication exception: %s", exception)
+            self._token = self._login()
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            _LOGGER.exception("SEMS Authentication exception: %s", exc)
             return False
-        else:
-            return self._token is not None
+        return self._token is not None
 
-    def _make_http_request(
-        self,
-        url: str,
-        headers: dict[str, str],
-        data: str | None = None,
-        json_data: dict[str, Any] | None = None,
-        operation_name: str = "HTTP request",
-        validate_code: bool = True,
-    ) -> dict[str, Any] | None:
-        """Make a generic HTTP request with error handling and optional code validation."""
-        try:
-            _LOGGER.debug("SEMS - Making %s to %s", operation_name, url)
+    def get_stations(self) -> list[dict[str, Any]] | None:
+        """Fetch the user's stations and return their dataList."""
+        api_base = self._ensure_api_base()
+        if api_base is None:
+            return None
+        path = _STATIONS_PATH_ANDROID
+        body = {"current": 1, "size": 100}
+        resp = self._request("POST", api_base + path, json_body=body)
+        if resp is None:
+            return None
+        return (resp.get("data") or {}).get("dataList") or []
 
-            # Copy headers to avoid mutating shared defaults
-            req_headers = dict(headers)
-            if req_headers.get("token") == _DefaultHeaders.get("token"):
-                # Login endpoint expects the default token to be base64 encoded
-                req_headers["token"] = base64.b64encode(
-                    req_headers["token"].encode("utf-8")
-                ).decode("utf-8")
+    def get_devices(self, station_id: str) -> list[dict[str, Any]] | None:
+        """Return the deviceDetailList for a station."""
+        api_base = self._ensure_api_base()
+        if api_base is None:
+            return None
+        resp = self._request(
+            "GET",
+            api_base + _DEVICE_PATH,
+            params={"stationId": station_id},
+        )
+        if resp is None:
+            return None
+        return (resp.get("data") or {}).get("deviceDetailList") or []
 
-            response = requests.post(
-                url,
-                headers=req_headers,
-                data=data,
-                json=json_data,
-                timeout=_RequestTimeout,
+    def get_telecounting(self, sn: str, station_id: str) -> list[dict[str, Any]] | None:
+        """Return the factor groups from telecounting for one inverter."""
+        api_base = self._ensure_api_base()
+        if api_base is None:
+            return None
+        path = _TELECOUNTING_PATH.format(sn=sn)
+        resp = self._request(
+            "GET",
+            api_base + path,
+            params={"deviceType": "INVERTER", "pwId": station_id},
+        )
+        if resp is None:
+            return None
+        return resp.get("data") or []
+
+    def get_telemetry(self, sn: str, station_id: str) -> list[dict[str, Any]] | None:
+        """Return the factor groups from telemetry for one inverter."""
+        api_base = self._ensure_api_base()
+        if api_base is None:
+            return None
+        path = _TELEMETRY_PATH.format(sn=sn)
+        resp = self._request(
+            "GET",
+            api_base + path,
+            params={"deviceType": "INVERTER", "pwId": station_id},
+        )
+        if resp is None:
+            return None
+        return resp.get("data") or []
+
+    def change_status(self, inverter_sn: str, status: str | int) -> bool:
+        """Toggle an inverter. ``status="2"``=off, ``"4"``=on.
+
+        Uses the new /PowerStation/SaveRemoteControlInverter endpoint
+        (same path as upstream / legacy).
+        """
+        api_base = self._ensure_api_base()
+        if api_base is None:
+            return False
+        resp = self._request(
+            "POST",
+            api_base + _POWER_CONTROL_PATH,
+            json_body={
+                "InverterSN": inverter_sn,
+                "InverterStatusSettingMark": "1",
+                "InverterStatus": str(status),
+            },
+            validate_code=False,
+        )
+        return resp is not None
+
+    # ----- token lifecycle ---------------------------------------------------
+
+    def _ensure_api_base(self) -> str | None:
+        """Return the API base from the current token, or None if not logged in."""
+        if self._token is None:
+            self._token = self._login()
+        if self._token is None:
+            return None
+        return self._token.get("api")
+
+    def _login(self) -> dict[str, Any] | None:
+        """POST cross-login. Returns the response token or None."""
+        headers = _build_headers(_LOGIN_TOKEN_ANDROID, with_content_type=True)
+        payload = {
+            "account": self._username,
+            "pwd": _password_for_login(self._password),
+            "agreement": 1,
+            "isLocal": True,
+            "isChinese": True,
+        }
+        resp = self._post(_LOGIN_URL, headers=headers, json_body=payload)
+        if resp is None:
+            return None
+        if str(resp.get("code")) not in {str(c) for c in _SUCCESS_CODES}:
+            _LOGGER.error(
+                "SEMS login failed: code=%s msg=%s",
+                resp.get("code"),
+                resp.get("msg"),
             )
+            return None
+        token = resp.get("data")
+        if not isinstance(token, dict):
+            _LOGGER.error("SEMS login: missing data dict in response")
+            return None
+        _LOGGER.debug("SEMS login OK, token=%s", _redact_for_log(token))
+        return token
 
-            _LOGGER.debug("%s Response: %s", operation_name, response)
-            # _LOGGER.debug("%s Response text: %s", operation_name, response.text)
+    # ----- HTTP plumbing -----------------------------------------------------
 
-            response.raise_for_status()
-            jsonResponse: dict[str, Any] = response.json()
+    def _post(self, url: str, *, headers: dict, json_body: dict | None = None) -> dict | None:
+        return self._request("POST", url, headers=headers, json_body=json_body)
 
-            # Validate response code if requested
-            if validate_code:
-                if jsonResponse.get("code") not in (0, "0"):
-                    _LOGGER.error(
-                        "%s failed with code: %s, message: %s",
-                        operation_name,
-                        jsonResponse.get("code"),
-                        jsonResponse.get("msg", "Unknown error"),
-                    )
-                    return None
+    def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict | None = None,
+        json_body: dict | None = None,
+        params: dict | None = None,
+        validate_code: bool = True,
+    ) -> dict | None:
+        """Single HTTP call with rate-limit detection.
 
-                if jsonResponse.get("data") is None:
-                    _LOGGER.error("%s response missing data field", operation_name)
-                    return None
+        If ``headers`` is omitted, plant headers are auto-built from
+        ``self._token`` (which must already be set via ``_login`` or a
+        prior plant call).
+        """
+        if headers is None:
+            if not isinstance(self._token, dict):
+                _LOGGER.error(
+                    "SEMS %s %s: no token available for plant headers", method, url
+                )
+                return None
+            headers = _build_headers(self._token)
 
-            return jsonResponse
-
-        except (requests.RequestException, ValueError, KeyError) as exception:
-            _LOGGER.error("Unable to complete %s: %s", operation_name, exception)
+        try:
+            _LOGGER.debug("SEMS %s %s", method, url)
+            r = requests.request(
+                method,
+                url,
+                headers=headers,
+                json=json_body,
+                params=params,
+                timeout=_REQUEST_TIMEOUT,
+            )
+        except requests.RequestException as exc:
+            _LOGGER.error("SEMS %s %s failed: %s", method, url, exc)
             raise
 
-    def getLoginToken(self, userName: str, password: str) -> dict[str, Any] | None:
-        """Get the login token for the SEMS API."""
         try:
-            # Prepare Login Data to retrieve Authentication Token
-            encoded_username = base64.b64encode(userName.encode("utf-8")).decode(
-                "utf-8"
-            )
-            encoded_password = base64.b64encode(password.encode("utf-8")).decode(
-                "utf-8"
-            )
-            login_data = json.dumps(
-                {"account": encoded_username, "pwd": encoded_password}
-            )
-
-            jsonResponse = self._make_http_request(
-                _LoginURL,
-                _DefaultHeaders,
-                data=login_data,
-                operation_name="login API call",
-                validate_code=True,
-            )
-
-            if jsonResponse is None:
-                return None
-
-            # Get token details from response
-            tokenDict = jsonResponse["data"]
-            if not isinstance(tokenDict, dict):
-                _LOGGER.error("Login response data was not a dict")
-                return None
-
-            _LOGGER.debug("SEMS - API Token received: %s", tokenDict)
-            return tokenDict
-
-        except (requests.RequestException, ValueError, KeyError) as exception:
-            _LOGGER.error("Unable to fetch login token from SEMS API: %s", exception)
+            body = r.json()
+        except ValueError:
+            _LOGGER.error("SEMS %s %s: non-JSON response (HTTP %s)", method, url, r.status_code)
             return None
 
-    def _make_api_call(
-        self,
-        url_part: str,
-        data: str | None = None,
-        renewToken: bool = False,
-        maxTokenRetries: int = 2,
-        operation_name: str = "API call",
-    ) -> dict[str, Any] | None:
-        """Make a generic API call with token management and retry logic."""
-        _LOGGER.debug("SEMS - Making %s", operation_name)
-        if maxTokenRetries <= 0:
-            _LOGGER.info("SEMS - Maximum token fetch tries reached, aborting for now")
-            raise OutOfRetries
+        if str(body.get("code")) == _RATE_LIMIT_CODE:
+            _LOGGER.warning("SEMS rate limit hit on %s %s", method, url)
+            raise SemsRateLimitedError(retry_after=_RATE_LIMIT_RETRY_AFTER)
 
-        if self._token is None or renewToken:
-            _LOGGER.debug(
-                "API token not set (%s) or new token requested (%s), fetching",
-                self._token,
-                renewToken,
+        if str(body.get("code")) == _NO_ACCESS_CODE:
+            # On CN plant endpoints this means token expired or scope
+            # rejected. Caller should re-login.
+            _LOGGER.warning(
+                "SEMS %s %s: no_access (code 100025) — token likely expired",
+                method, url,
             )
-            self._token = self.getLoginToken(self._username, self._password)
+            raise SemsRateLimitedError(retry_after=_RATE_LIMIT_RETRY_AFTER)
 
-        if self._token is None:
-            _LOGGER.error("Failed to obtain API token")
+        if validate_code and str(body.get("code")) not in {str(c) for c in _SUCCESS_CODES}:
+            _LOGGER.error(
+                "SEMS %s %s returned code=%s msg=%s",
+                method, url, body.get("code"), body.get("msg"),
+            )
             return None
 
-        # Prepare headers
-        encoded_token = base64.b64encode(
-            json.dumps(self._token).encode("utf-8")
-        ).decode("utf-8")
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "token": encoded_token,
-        }
-
-        api_url = f"{_APIURL.rstrip('/')}{url_part}"
-
-        try:
-            jsonResponse: dict[str, Any] | None = self._make_http_request(
-                api_url,
-                headers,
-                data=data,
-                operation_name=operation_name,
-                validate_code=True,
-            )
-
-            # _make_http_request already validated the response, so if we get here, it's successful
-            if jsonResponse is None:
-                # Response validation failed in _make_http_request
-                _LOGGER.debug(
-                    "%s not successful, retrying with new token, %s retries remaining",
-                    operation_name,
-                    maxTokenRetries,
-                )
-                return self._make_api_call(
-                    url_part, data, True, maxTokenRetries - 1, operation_name
-                )
-
-            # Response is valid, return the data
-            return jsonResponse["data"]
-
-        except (requests.RequestException, ValueError, KeyError) as exception:
-            _LOGGER.error("Unable to complete %s: %s", operation_name, exception)
-            return None
-
-    def getPowerStationIds(
-        self, renewToken: bool = False, maxTokenRetries: int = 2
-    ) -> dict[str, Any] | None:
-        """Get the power station ids from the SEMS API."""
-        return self._make_api_call(
-            _GetPowerStationIdByOwnerURLPart,
-            data=None,
-            renewToken=renewToken,
-            maxTokenRetries=maxTokenRetries,
-            operation_name="getPowerStationIds API call",
-        )
-
-    def getData(
-        self, powerStationId: str, renewToken: bool = False, maxTokenRetries: int = 2
-    ) -> dict[str, Any]:
-        """Get the latest data from the SEMS API and updates the state."""
-        data = '{"powerStationId":"' + powerStationId + '"}'
-        result = self._make_api_call(
-            _PowerStationURLPart,
-            data=data,
-            renewToken=renewToken,
-            maxTokenRetries=maxTokenRetries,
-            operation_name="getData API call",
-        )
-        return result if isinstance(result, dict) else {}
-
-    def _make_control_api_call(
-        self,
-        data: dict[str, Any],
-        renewToken: bool = False,
-        maxTokenRetries: int = 2,
-        operation_name: str = "Control API call",
-    ) -> bool:
-        """Make a control API call with different response handling."""
-        _LOGGER.debug("SEMS - Making %s", operation_name)
-        if maxTokenRetries <= 0:
-            _LOGGER.info("SEMS - Maximum token fetch tries reached, aborting for now")
-            raise OutOfRetries
-
-        if self._token is None or renewToken:
-            _LOGGER.debug(
-                "API token not set (%s) or new token requested (%s), fetching",
-                self._token,
-                renewToken,
-            )
-            self._token = self.getLoginToken(self._username, self._password)
-
-        if self._token is None:
-            _LOGGER.error("Failed to obtain API token")
-            return False
-
-        # Prepare headers
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "token": json.dumps(self._token),
-        }
-
-        api_url = f"{_APIURL.rstrip('/')}{_PowerControlURLPart}"
-
-        try:
-            # Control API uses different validation (HTTP status code), so don't validate JSON response code
-            self._make_http_request(
-                api_url,
-                headers,
-                json_data=data,
-                operation_name=operation_name,
-                validate_code=False,
-            )
-
-            # For control API, any successful HTTP response (status 200) means success
-            # The _make_http_request already validated HTTP status via raise_for_status()
-            return True
-
-        except requests.HTTPError as e:
-            if hasattr(e.response, "status_code") and e.response.status_code != 200:
-                _LOGGER.warning(
-                    "%s not successful, retrying with new token, %s retries remaining",
-                    operation_name,
-                    maxTokenRetries,
-                )
-                return self._make_control_api_call(
-                    data, True, maxTokenRetries - 1, operation_name
-                )
-            _LOGGER.error("Unable to execute %s: %s", operation_name, e)
-            return False
-        except (requests.RequestException, ValueError, KeyError) as exception:
-            _LOGGER.error("Unable to execute %s: %s", operation_name, exception)
-            return False
-
-    def change_status(
-        self,
-        inverterSn: str,
-        status: str | int,
-        renewToken: bool = False,
-        maxTokenRetries: int = 2,
-    ) -> None:
-        """Schedule the downtime of the station."""
-        data = {
-            "InverterSN": inverterSn,
-            "InverterStatusSettingMark": "1",
-            "InverterStatus": str(status),
-        }
-
-        success = self._make_control_api_call(
-            data,
-            renewToken=renewToken,
-            maxTokenRetries=maxTokenRetries,
-            operation_name=f"power control command for inverter {inverterSn}",
-        )
-
-        if not success:
-            _LOGGER.error("Power control command failed after all retries")
-
-
-class OutOfRetries(exceptions.HomeAssistantError):
-    """Error to indicate too many error attempts."""
+        return body

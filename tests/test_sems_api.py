@@ -1,12 +1,10 @@
-"""Tests for the SEMS CN API module.
+"""Tests for the SEMS+ CN API client.
 
-Tests are split into two styles:
-
-* ``TestSemsApiUnit`` — uses ``unittest.mock`` to verify the request flow
-  (token renewal, validation, error handling) without going through the wire.
-* ``TestSemsApiIntegration`` — uses ``requests_mock`` to exercise the actual
-  endpoint URLs and payload shapes used by the China-region SEMS+ API at
-  ``gopsapi.sems.com.cn``.
+Covers the SEMS+ plant API flow: login with x-signature, stations/devices/
+telecounting/telemetry, rate-limit detection, inverter on/off control.
+The unit tests use ``unittest.mock`` for the request layer; the integration
+tests use ``requests_mock`` to exercise the real SEMS+ URL and payload
+shapes documented at ``E:/Code/sems-plus-api.md``.
 """
 
 from unittest.mock import Mock, patch
@@ -15,85 +13,169 @@ import pytest
 import requests
 
 from custom_components.sems_cn.sems_api import (
-    _APIURL,
-    OutOfRetries,
+    _APP_VERSION,
+    _LOGIN_URL,
     SemsApi,
-    _GetPowerStationIdByOwnerURLPart,
-    _LoginURL,
-    _PowerControlURLPart,
-    _PowerStationURLPart,
+    SemsRateLimitedError,
+    _encode_signature,
+    _md5_then_base64,
 )
 
-MOCK_INVERTER_SN = "GW0000SN000TEST1"
-MOCK_POWER_STATION_ID = "12345678-1234-5678-9abc-123456789abc"
-SUCCESS_MESSAGE = "操作成功"
+MOCK_INVERTER_SN = "4010KDTG245G0340"
+MOCK_STATION_ID = "ed172b80-e50f-45e4-9493-72c0abbfa9d6"
 
 
-def _login_payload(uid: str = "test-uid", token: str = "test-token") -> dict:
-    """Return a realistic SEMS+ login response payload."""
+def _login_payload(token: str = "freshtoken") -> dict:
+    """Realistic SEMS+ login response."""
     return {
-        "hasError": False,
-        "msg": SUCCESS_MESSAGE,
-        "code": "0",
+        "code": "00000",
+        "description": "成功",
         "data": {
-            "uid": uid,
-            "timestamp": 1757355815062,
+            "uid": "eb36ccee-28af-489d-a7f7-1944e967eeb7",
+            "timestamp": "1781072044763",
             "token": token,
-            "client": "ios",
-            "version": "",
-            "language": "en",
+            "client": "semsPlusAndroid",
+            "version": "2.5.2",
+            "language": "zh-CN",
+            "api": "https://hz-gateway.sems.com.cn/web/sems",
+            "region": "cn",
         },
     }
 
 
-def _station_payload() -> dict:
-    """Return a realistic power-station-IDs response payload."""
+def _token_dict(token: str = "freshtoken") -> dict:
+    return _login_payload(token)["data"]
+
+
+def _stations_payload(station_id: str = MOCK_STATION_ID) -> dict:
     return {
-        "hasError": False,
-        "code": "0",
-        "msg": SUCCESS_MESSAGE,
-        "data": MOCK_POWER_STATION_ID,
+        "code": "00000",
+        "data": {
+            "dataList": [
+                {
+                    "id": station_id,
+                    "name": "Test Station",
+                    "installedPower": 10.0,
+                    "status": 1,
+                }
+            ],
+            "size": 2,
+            "current": 1,
+            "total": 1,
+        },
     }
 
 
-def _monitor_payload() -> dict:
-    """Return a realistic monitor-detail response payload."""
+def _devices_payload(sn: str = MOCK_INVERTER_SN, station_id: str = MOCK_STATION_ID) -> dict:
     return {
-        "hasError": False,
-        "msg": SUCCESS_MESSAGE,
-        "code": "0",
+        "code": "00000",
         "data": {
-            "info": {
-                "powerstation_id": MOCK_POWER_STATION_ID,
-                "stationname": "Test Solar Farm",
-                "address": "Test City, Test Country",
-                "capacity": 3.2,
-                "status": 1,
-            },
-            "kpi": {
-                "pac": 589.0,
-                "power": 8.9,
-                "total_power": 18843.2,
-                "currency": "CNY",
-            },
-            "inverter": [
+            "total": 1,
+            "deviceDetailList": [
                 {
-                    "sn": MOCK_INVERTER_SN,
-                    "name": "Inverter 1",
-                    "out_pac": 589.0,
-                    "eday": 8.9,
-                    "emonth": 76.8,
-                    "etotal": 18843.2,
-                    "status": 1,
-                    "tempperature": 32.0,
+                    "deviceType": "INVERTER",
+                    "total": 1,
+                    "statusDetailList": [
+                        {
+                            "status": 5,
+                            "total": 1,
+                            "snList": [sn],
+                            "isHemsMap": {sn: False},
+                            "detailMap": {
+                                sn: {
+                                    "sn": sn,
+                                    "name": "Inverter 1",
+                                    "deviceType": "INVERTER",
+                                    "status": 5,
+                                }
+                            },
+                        }
+                    ],
                 }
             ],
         },
     }
 
 
+def _telecounting_payload() -> dict:
+    return {
+        "code": "00000",
+        "data": [
+            {
+                "code": "telecounting_real",
+                "alias": "realtime_data",
+                "factors": [
+                    {"code": "pAc", "data": "6.895", "unit": "kW"},
+                    {"code": "ratedPower", "data": "10", "unit": "kW"},
+                ],
+            },
+            {
+                "code": "telecounting_today",
+                "alias": "day",
+                "factors": [{"code": "proPvStatsToday", "data": "27.7", "unit": "kWh"}],
+            },
+            {
+                "code": "telecounting_total",
+                "alias": "total",
+                "factors": [{"code": "proPvStatsTotal", "data": "17777.2", "unit": "kWh"}],
+            },
+        ],
+    }
+
+
+def _telemetry_payload() -> dict:
+    return {
+        "code": "00000",
+        "data": [
+            {
+                "code": "system",
+                "alias": "system_parameters",
+                "factors": [
+                    {"code": "hTotal", "data": "7471", "unit": "H"},
+                    {"code": "Temperature", "data": "48.1", "unit": "℃"},
+                ],
+            },
+            {
+                "code": "ac",
+                "alias": "ac_parameters",
+                "factors": [
+                    {"code": "pAc", "data": "6.895", "unit": "kW"},
+                    {"code": "PHASE-A:Vac", "data": "232.1", "unit": "V"},
+                    {"code": "PHASE-A:Iac", "data": "12.2", "unit": "A"},
+                ],
+            },
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Unit tests — pure functions, no network
+# ---------------------------------------------------------------------------
+
+
+class TestSignatures:
+    """Password encoding and x-signature algorithm."""
+
+    def test_md5_then_base64_known_value(self):
+        # Verified against the SEMS+ web frontend's MD5-then-base64-of-hex
+        # encoding for the password "R15@goodwe".
+        expected = "YjYzZjc5MDFiYTExZDE4NTJkODU0ZTdlMDQ4YjNhMGU="
+        assert _md5_then_base64("R15@goodwe") == expected
+
+    def test_encode_signature_format(self):
+        # Output must be base64, decode to "<64hex>@<digits>"
+        import base64
+        token = {"uid": "abc", "token": "xyz"}
+        sig = _encode_signature(token)
+        decoded = base64.b64decode(sig).decode()
+        assert "@" in decoded
+        hash_part, _, ts = decoded.rpartition("@")
+        assert len(hash_part) == 64
+        assert ts.isdigit()
+
+
 class TestSemsApiUnit:
-    """Unit tests for the request flow, token handling, and error paths."""
+    """Request-level unit tests."""
 
     def setup_method(self):
         self.hass = Mock()
@@ -102,378 +184,249 @@ class TestSemsApiUnit:
         self.api = SemsApi(self.hass, self.username, self.password)
 
     def test_init(self):
-        """SemsApi stores the hass handle and credentials, no token yet."""
         assert self.api._hass is self.hass
         assert self.api._username == self.username
         assert self.api._password == self.password
         assert self.api._token is None
 
-    @patch("custom_components.sems_cn.sems_api.requests.post")
-    def test_make_http_request_success(self, mock_post):
-        """A 2xx response with code 0 and data is returned as the parsed JSON."""
-        response = Mock()
-        response.status_code = 200
-        response.json.return_value = {"code": 0, "data": {"k": "v"}}
-        response.raise_for_status.return_value = None
-        mock_post.return_value = response
+    @patch("custom_components.sems_cn.sems_api.requests.request")
+    def test_login_success(self, mock_request):
+        """A successful login stores the token and exposes data.api as base."""
+        mock_response = Mock()
+        mock_response.json.return_value = _login_payload()
+        mock_request.return_value = mock_response
 
-        result = self.api._make_http_request(
-            "http://test.com",
-            {"Content-Type": "application/json"},
-            data='{"test": "data"}',
-            operation_name="op",
-        )
+        result = self.api._login()
 
-        assert result == {"code": 0, "data": {"k": "v"}}
+        assert result is not None
+        assert result["api"] == "https://hz-gateway.sems.com.cn/web/sems"
+        # Token should be cached so subsequent calls reuse it.
+        assert self.api._token["token"] == "freshtoken"
 
-    @patch("custom_components.sems_cn.sems_api.requests.post")
-    def test_make_http_request_validation_failure(self, mock_post):
-        """A non-zero response code is treated as a failure (returns None)."""
-        response = Mock()
-        response.status_code = 200
-        response.json.return_value = {"code": 1001, "msg": "Invalid credentials"}
-        response.raise_for_status.return_value = None
-        mock_post.return_value = response
+    @patch("custom_components.sems_cn.sems_api.requests.request")
+    def test_login_failure_returns_none(self, mock_request):
+        mock_response = Mock()
+        mock_response.json.return_value = {"code": "C0602", "msg": "bad"}
+        mock_request.return_value = mock_response
 
-        result = self.api._make_http_request(
-            "http://test.com",
-            {"Content-Type": "application/json"},
-            operation_name="op",
-        )
-        assert result is None
+        assert self.api._login() is None
+        assert self.api._token is None
 
-    @patch("custom_components.sems_cn.sems_api.requests.post")
-    def test_make_http_request_missing_data(self, mock_post):
-        """A code 0 response without data is treated as a failure (returns None)."""
-        response = Mock()
-        response.status_code = 200
-        response.json.return_value = {"code": 0, "data": None}
-        response.raise_for_status.return_value = None
-        mock_post.return_value = response
+    @patch("custom_components.sems_cn.sems_api.requests.request")
+    def test_login_uses_isChinese_flag(self, mock_request):
+        """Login body must include isChinese+isLocal for CN routing."""
+        mock_response = Mock()
+        mock_response.json.return_value = _login_payload()
+        mock_request.return_value = mock_response
 
-        result = self.api._make_http_request(
-            "http://test.com",
-            {"Content-Type": "application/json"},
-            operation_name="op",
-        )
-        assert result is None
+        self.api._login()
+        kwargs = mock_request.call_args.kwargs
+        body = kwargs["json"]
+        assert body["isChinese"] is True
+        assert body["isLocal"] is True
+        assert body["agreement"] == 1
+        # Password must be encoded as base64(md5_hex(plain)), not base64(plain).
+        assert body["pwd"] == _md5_then_base64("test_password")
 
-    @patch("custom_components.sems_cn.sems_api.requests.post")
-    def test_make_http_request_no_validation(self, mock_post):
-        """With validate_code=False the response is returned as-is."""
-        response = Mock()
-        response.status_code = 200
-        response.json.return_value = {"code": 1001, "msg": "Error"}
-        response.raise_for_status.return_value = None
-        mock_post.return_value = response
+    @patch("custom_components.sems_cn.sems_api.requests.request")
+    def test_login_sends_appversion_and_traceid(self, mock_request):
+        mock_response = Mock()
+        mock_response.json.return_value = _login_payload()
+        mock_request.return_value = mock_response
 
-        result = self.api._make_http_request(
-            "http://test.com",
-            {"Content-Type": "application/json"},
-            operation_name="op",
-            validate_code=False,
-        )
-        assert result == {"code": 1001, "msg": "Error"}
+        self.api._login()
+        headers = mock_request.call_args.kwargs["headers"]
+        assert headers["appversion"] == _APP_VERSION
+        assert "traceid" in headers
+        assert len(headers["traceid"]) == 32  # uuid hex, no dashes
 
-    @patch("custom_components.sems_cn.sems_api.requests.post")
-    def test_make_http_request_network_error_propagates(self, mock_post):
-        """A requests exception is re-raised so the coordinator can surface it."""
-        mock_post.side_effect = requests.ConnectionError("Network error")
+    @patch("custom_components.sems_cn.sems_api.requests.request")
+    def test_request_sends_x_signature(self, mock_request):
+        """Every plant call must carry a fresh x-signature."""
+        mock_response = Mock()
+        mock_response.json.return_value = _stations_payload()
+        mock_request.return_value = mock_response
 
+        self.api._token = _token_dict()
+        self.api.get_stations()
+
+        headers = mock_request.call_args.kwargs["headers"]
+        assert "x-signature" in headers
+        # Verify x-signature decodes to "<hash>@<ms>"
+        import base64
+        decoded = base64.b64decode(headers["x-signature"]).decode()
+        assert "@" in decoded
+
+    @patch("custom_components.sems_cn.sems_api.requests.request")
+    def test_rate_limit_GY0429_raises(self, mock_request):
+        mock_response = Mock()
+        mock_response.json.return_value = {"code": "GY0429", "msg": "rate limited"}
+        mock_request.return_value = mock_response
+
+        self.api._token = _token_dict()
+        with pytest.raises(SemsRateLimitedError) as exc_info:
+            self.api.get_stations()
+        assert exc_info.value.retry_after == 300
+
+    @patch("custom_components.sems_cn.sems_api.requests.request")
+    def test_rate_limit_100025_raises(self, mock_request):
+        """CN plant endpoints return 100025 when token expired."""
+        mock_response = Mock()
+        mock_response.json.return_value = {"code": "100025", "msg": "no_access"}
+        mock_request.return_value = mock_response
+
+        self.api._token = _token_dict()
+        with pytest.raises(SemsRateLimitedError) as exc_info:
+            self.api.get_telemetry(MOCK_INVERTER_SN, MOCK_STATION_ID)
+        assert exc_info.value.retry_after == 300
+
+    @patch("custom_components.sems_cn.sems_api.requests.request")
+    def test_non_success_response_returns_none(self, mock_request):
+        """Unknown error codes (not rate-limit) return None, not raise."""
+        mock_response = Mock()
+        mock_response.json.return_value = {"code": "999", "msg": "???"}
+        mock_request.return_value = mock_response
+
+        self.api._token = _token_dict()
+        assert self.api.get_stations() is None
+
+    @patch("custom_components.sems_cn.sems_api.requests.request")
+    def test_network_error_propagates(self, mock_request):
+        mock_request.side_effect = requests.ConnectionError("network down")
+        self.api._token = _token_dict()
         with pytest.raises(requests.ConnectionError):
-            self.api._make_http_request(
-                "http://test.com",
-                {"Content-Type": "application/json"},
-                operation_name="op",
-            )
+            self.api.get_stations()
 
-    @patch.object(SemsApi, "_make_http_request")
-    def test_get_login_token_success(self, mock_http):
-        """getLoginToken returns the data field on a successful response."""
-        mock_http.return_value = {"code": 0, "data": {"uid": "u", "token": "t"}}
-        assert self.api.getLoginToken("u", "p") == {"uid": "u", "token": "t"}
+    @patch("custom_components.sems_cn.sems_api.requests.request")
+    def test_get_stations_uses_correct_path(self, mock_request):
+        mock_response = Mock()
+        mock_response.json.return_value = _stations_payload()
+        mock_request.return_value = mock_response
 
-    @patch.object(SemsApi, "_make_http_request")
-    def test_get_login_token_returns_none_on_failure(self, mock_http):
-        """getLoginToken returns None when the HTTP layer signals failure."""
-        mock_http.return_value = None
-        assert self.api.getLoginToken("u", "p") is None
+        self.api._token = _token_dict()
+        self.api.get_stations()
 
-    @patch.object(SemsApi, "_make_http_request")
-    def test_get_login_token_swallows_request_exception(self, mock_http):
-        """A request exception during login is logged and None is returned."""
-        mock_http.side_effect = requests.RequestException("boom")
-        assert self.api.getLoginToken("u", "p") is None
+        url = mock_request.call_args.kwargs["url"] or mock_request.call_args.args[0]
+        assert "/sems-plant/api/app/v2/stations/page" in url
+        body = mock_request.call_args.kwargs["json"]
+        assert body == {"current": 1, "size": 100}
 
-    def test_test_authentication_success(self):
-        """A successful login makes test_authentication() return True and stash the token."""
-        with patch.object(self.api, "getLoginToken") as login:
-            login.return_value = {"token": "t"}
-            assert self.api.test_authentication() is True
-            assert self.api._token == {"token": "t"}
+    @patch("custom_components.sems_cn.sems_api.requests.request")
+    def test_get_devices_passes_station_id_as_query(self, mock_request):
+        mock_response = Mock()
+        mock_response.json.return_value = _devices_payload()
+        mock_request.return_value = mock_response
 
-    def test_test_authentication_failure(self):
-        """A failed login makes test_authentication() return False."""
-        with patch.object(self.api, "getLoginToken") as login:
-            login.return_value = None
-            assert self.api.test_authentication() is False
+        self.api._token = _token_dict()
+        self.api.get_devices(MOCK_STATION_ID)
 
-    def test_test_authentication_exception(self):
-        """An exception during login makes test_authentication() return False."""
-        with patch.object(self.api, "getLoginToken") as login:
-            login.side_effect = Exception("boom")
-            assert self.api.test_authentication() is False
+        params = mock_request.call_args.kwargs["params"]
+        assert params == {"stationId": MOCK_STATION_ID}
 
-    @patch.object(SemsApi, "getLoginToken")
-    @patch.object(SemsApi, "_make_http_request")
-    def test_make_api_call_uses_existing_token(self, mock_http, mock_login):
-        """With a valid token, _make_api_call skips re-login and returns data."""
-        self.api._token = {"token": "t"}
-        mock_http.return_value = {"code": 0, "data": {"ok": True}}
+    @patch("custom_components.sems_cn.sems_api.requests.request")
+    def test_change_status_off(self, mock_request):
+        """change_status('2') sends InverterStatus=2 (turn off)."""
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"code": "00000"}
+        mock_request.return_value = mock_response
 
-        result = self.api._make_api_call(
-            "/v1/PowerStation/GetMonitorDetailByPowerstationId",
-            data='{"powerStationId":"s"}',
-            operation_name="getData API call",
-        )
+        self.api._token = _token_dict()
+        self.api.change_status(MOCK_INVERTER_SN, "2")
 
-        assert result == {"ok": True}
-        mock_login.assert_not_called()
+        body = mock_request.call_args.kwargs["json_body"]
+        assert body == {
+            "InverterSN": MOCK_INVERTER_SN,
+            "InverterStatusSettingMark": "1",
+            "InverterStatus": "2",
+        }
 
-    @patch.object(SemsApi, "getLoginToken")
-    @patch.object(SemsApi, "_make_http_request")
-    def test_make_api_call_refreshes_missing_token(self, mock_http, mock_login):
-        """A None token triggers a fresh login before the API call."""
-        self.api._token = None
-        mock_login.return_value = {"token": "new"}
-        mock_http.return_value = {"code": 0, "data": {"ok": True}}
+    def test_ensure_api_base_logs_in_if_needed(self):
+        """First call to a plant endpoint triggers login."""
+        with patch.object(self.api, "_login") as mock_login:
+            mock_login.return_value = _token_dict()
+            base = self.api._ensure_api_base()
+            assert base == "https://hz-gateway.sems.com.cn/web/sems"
+            mock_login.assert_called_once()
 
-        self.api._make_api_call(
-            "/v1/PowerStation/GetMonitorDetailByPowerstationId",
-            operation_name="getData API call",
-        )
+    def test_ensure_api_base_uses_cached_token(self):
+        """Subsequent calls reuse the cached token without re-login."""
+        self.api._token = _token_dict()
+        with patch.object(self.api, "_login") as mock_login:
+            base = self.api._ensure_api_base()
+            assert base == "https://hz-gateway.sems.com.cn/web/sems"
+            mock_login.assert_not_called()
 
-        mock_login.assert_called_once_with(self.username, self.password)
 
-    @patch.object(SemsApi, "getLoginToken")
-    def test_make_api_call_returns_none_when_login_fails(self, mock_login):
-        """If login returns None, _make_api_call short-circuits and returns None."""
-        self.api._token = None
-        mock_login.return_value = None
-
-        result = self.api._make_api_call(
-            "/v1/PowerStation/GetMonitorDetailByPowerstationId",
-            operation_name="getData API call",
-        )
-
-        assert result is None
-
-    @patch.object(SemsApi, "getLoginToken")
-    @patch.object(SemsApi, "_make_http_request")
-    def test_make_api_call_retries_with_new_token_on_validation_failure(
-        self, mock_http, mock_login
-    ):
-        """A None response triggers a token refresh and one more attempt."""
-        self.api._token = {"token": "old"}
-        mock_http.side_effect = [None, {"code": 0, "data": {"ok": True}}]
-        mock_login.return_value = {"token": "new"}
-
-        result = self.api._make_api_call(
-            "/v1/PowerStation/GetMonitorDetailByPowerstationId",
-            operation_name="getData API call",
-            maxTokenRetries=2,
-        )
-
-        assert result == {"ok": True}
-        assert mock_http.call_count == 2
-
-    @patch.object(SemsApi, "getLoginToken")
-    def test_make_api_call_raises_when_retries_exhausted(self, mock_login):
-        """maxTokenRetries=0 means we cannot try, so OutOfRetries is raised."""
-        self.api._token = None
-
-        with pytest.raises(OutOfRetries):
-            self.api._make_api_call(
-                "/v1/PowerStation/GetMonitorDetailByPowerstationId",
-                maxTokenRetries=0,
-                operation_name="getData API call",
-            )
-
-    @patch.object(SemsApi, "_make_api_call")
-    def test_get_power_station_ids_delegates(self, mock_call):
-        """getPowerStationIds delegates to _make_api_call with the right endpoint."""
-        mock_call.return_value = MOCK_POWER_STATION_ID
-        assert self.api.getPowerStationIds() == MOCK_POWER_STATION_ID
-        mock_call.assert_called_once_with(
-            _GetPowerStationIdByOwnerURLPart,
-            data=None,
-            renewToken=False,
-            maxTokenRetries=2,
-            operation_name="getPowerStationIds API call",
-        )
-
-    @patch.object(SemsApi, "_make_api_call")
-    def test_get_data_uses_v1_endpoint(self, mock_call):
-        """getData posts the station ID to the v1 monitor endpoint."""
-        mock_call.return_value = {"k": "v"}
-        assert self.api.getData(MOCK_POWER_STATION_ID) == {"k": "v"}
-        mock_call.assert_called_once_with(
-            _PowerStationURLPart,
-            data=f'{{"powerStationId":"{MOCK_POWER_STATION_ID}"}}',
-            renewToken=False,
-            maxTokenRetries=2,
-            operation_name="getData API call",
-        )
-
-    @patch.object(SemsApi, "_make_api_call")
-    def test_get_data_returns_empty_when_api_returns_none(self, mock_call):
-        """A None result is normalized to an empty dict for safe downstream access."""
-        mock_call.return_value = None
-        assert self.api.getData(MOCK_POWER_STATION_ID) == {}
-
-    @patch.object(SemsApi, "_make_control_api_call")
-    def test_change_status_passes_through(self, mock_control):
-        """change_status forwards to the control API and is silent on failure."""
-        mock_control.return_value = True
-        self.api.change_status("inv123", 1)
-        mock_control.assert_called_once()
-
-    @patch.object(SemsApi, "_make_control_api_call")
-    def test_change_status_silent_on_failure(self, mock_control):
-        """change_status does not raise even if the control API call fails."""
-        mock_control.return_value = False
-        self.api.change_status("inv123", 1)
-        mock_control.assert_called_once()
+# ---------------------------------------------------------------------------
+# Integration tests — request against a mocked server
+# ---------------------------------------------------------------------------
 
 
 class TestSemsApiIntegration:
-    """End-to-end-ish tests that hit real CN API URL paths via ``requests_mock``."""
+    """requests_mock exercises real URL paths and response shapes."""
 
     def setup_method(self):
-        self.username = "test_user"
-        self.password = "test_password"
-        self.api = SemsApi(None, self.username, self.password)
+        self.hass = Mock()
+        self.api = SemsApi(self.hass, "u", "p")
+        # Pre-seed token so tests don't have to log in first.
+        self.api._token = _token_dict()
 
-    def test_successful_login(self, requests_mock):
-        """A well-formed CN login response yields a usable token dict."""
-        requests_mock.post(_LoginURL, json=_login_payload())
+    def test_login_returns_token(self, requests_mock):
+        requests_mock.post(_LOGIN_URL, json=_login_payload("login1"))
+        token = self.api._login()
+        assert token["token"] == "login1"
+        assert token["api"].endswith("/web/sems")
 
-        result = self.api.getLoginToken(self.username, self.password)
-
-        assert result is not None
-        assert result["uid"] == "test-uid"
-        assert result["token"] == "test-token"
-
-    def test_failed_login_invalid_credentials(self, requests_mock):
-        """A code != 0 login response surfaces as None."""
+    def test_get_stations_returns_dataList(self, requests_mock):
         requests_mock.post(
-            _LoginURL,
-            json={"code": 1001, "msg": "Invalid credentials", "data": None},
+            "https://hz-gateway.sems.com.cn/web/sems/sems-plant/api/app/v2/stations/page",
+            json=_stations_payload(),
+        )
+        stations = self.api.get_stations()
+        assert stations and stations[0]["id"] == MOCK_STATION_ID
+
+    def test_get_devices_returns_devices(self, requests_mock):
+        requests_mock.get(
+            "https://hz-gateway.sems.com.cn/web/sems/sems-plant/api/stations/device/all-status",
+            json=_devices_payload(),
+        )
+        devices = self.api.get_devices(MOCK_STATION_ID)
+        assert devices and devices[0]["deviceType"] == "INVERTER"
+
+    def test_get_telecounting_returns_data(self, requests_mock):
+        requests_mock.get(
+            "https://hz-gateway.sems.com.cn/web/sems/sems-plant/api/equipments/"
+            f"{MOCK_INVERTER_SN}/telecounting",
+            json=_telecounting_payload(),
+        )
+        groups = self.api.get_telecounting(MOCK_INVERTER_SN, MOCK_STATION_ID)
+        assert groups and groups[0]["code"] == "telecounting_real"
+
+    def test_get_telemetry_returns_data(self, requests_mock):
+        requests_mock.get(
+            "https://hz-gateway.sems.com.cn/web/sems/sems-plant/api/equipments/"
+            f"{MOCK_INVERTER_SN}/telemetry",
+            json=_telemetry_payload(),
+        )
+        groups = self.api.get_telemetry(MOCK_INVERTER_SN, MOCK_STATION_ID)
+        assert groups and any(
+            g["code"] == "system" for g in groups
         )
 
-        assert self.api.getLoginToken(self.username, self.password) is None
-
-    def test_login_network_error(self, requests_mock):
-        """A connection error during login is swallowed and None is returned."""
-        requests_mock.post(_LoginURL, exc=requests.ConnectionError("boom"))
-        assert self.api.getLoginToken(self.username, self.password) is None
-
-    def test_authentication_success(self, requests_mock):
-        """test_authentication returns True on a successful login."""
-        requests_mock.post(_LoginURL, json=_login_payload())
-        assert self.api.test_authentication() is True
-
-    def test_authentication_failure(self, requests_mock):
-        """test_authentication returns False when login fails."""
+    def test_change_status_returns_true_on_2xx(self, requests_mock):
         requests_mock.post(
-            _LoginURL, json={"code": 1001, "msg": "Invalid credentials", "data": None}
+            "https://hz-gateway.sems.com.cn/web/sems/PowerStation/SaveRemoteControlInverter",
+            json={"code": "00000"}, status_code=200,
         )
-        assert self.api.test_authentication() is False
+        assert self.api.change_status(MOCK_INVERTER_SN, "2") is True
 
-    def test_get_power_station_ids(self, requests_mock):
-        """getPowerStationIds returns the power station ID from the CN API."""
-        requests_mock.post(_LoginURL, json=_login_payload())
+    def test_change_status_returns_false_on_error(self, requests_mock):
         requests_mock.post(
-            f"{_APIURL.rstrip('/')}{_GetPowerStationIdByOwnerURLPart}",
-            json=_station_payload(),
+            "https://hz-gateway.sems.com.cn/web/sems/PowerStation/SaveRemoteControlInverter",
+            status_code=500,
         )
-
-        result = self.api.getPowerStationIds()
-        assert result == MOCK_POWER_STATION_ID
-
-    def test_get_data_returns_full_payload(self, requests_mock):
-        """getData returns the full monitor-detail payload, including inverters."""
-        requests_mock.post(_LoginURL, json=_login_payload())
-        requests_mock.post(
-            f"{_APIURL.rstrip('/')}{_PowerStationURLPart}",
-            json=_monitor_payload(),
-        )
-
-        result = self.api.getData(MOCK_POWER_STATION_ID)
-
-        assert result["info"]["powerstation_id"] == MOCK_POWER_STATION_ID
-        assert result["kpi"]["pac"] == 589.0
-        assert len(result["inverter"]) == 1
-        assert result["inverter"][0]["sn"] == MOCK_INVERTER_SN
-        assert result["inverter"][0]["out_pac"] == 589.0
-
-    def test_get_data_returns_empty_on_login_failure(self, requests_mock):
-        """getData returns an empty dict when the login itself fails."""
-        requests_mock.post(
-            _LoginURL, json={"code": 1001, "msg": "Invalid credentials", "data": None}
-        )
-        assert self.api.getData("station123") == {}
-
-    def test_change_status_success(self, requests_mock):
-        """change_status completes silently when the control API returns 200."""
-        requests_mock.post(_LoginURL, json=_login_payload())
-        requests_mock.post(
-            f"{_APIURL.rstrip('/')}{_PowerControlURLPart}",
-            json={"status": "success"},
-            status_code=200,
-        )
-
-        # Should not raise
-        self.api.change_status(MOCK_INVERTER_SN, 1)
-
-    def test_change_status_raises_after_exhausting_retries(self, requests_mock):
-        """A persistent HTTP error on the control API surfaces as OutOfRetries."""
-        requests_mock.post(_LoginURL, json=_login_payload())
-        requests_mock.post(
-            f"{_APIURL.rstrip('/')}{_PowerControlURLPart}", status_code=401
-        )
-
-        with pytest.raises(OutOfRetries):
-            self.api.change_status(MOCK_INVERTER_SN, 1)
-
-    def test_api_call_retries_with_new_token(self, requests_mock):
-        """A stale-token failure is followed by a refresh and a successful retry."""
-        requests_mock.post(
-            _LoginURL,
-            [
-                {"json": _login_payload(uid="u1", token="old")},
-                {"json": _login_payload(uid="u1", token="new")},
-            ],
-        )
-        requests_mock.post(
-            f"{_APIURL.rstrip('/')}{_GetPowerStationIdByOwnerURLPart}",
-            [
-                {"json": {"code": 1002, "msg": "Token expired", "data": None}},
-                {"json": _station_payload()},
-            ],
-        )
-
-        result = self.api.getPowerStationIds()
-        assert result == MOCK_POWER_STATION_ID
-
-
-class TestOutOfRetries:
-    """Smoke test for the OutOfRetries exception class."""
-
-    def test_out_of_retries_is_an_exception(self):
-        exception = OutOfRetries("Test message")
-        assert str(exception) == "Test message"
-        assert isinstance(exception, Exception)
+        assert self.api.change_status(MOCK_INVERTER_SN, "2") is False
 
 
 if __name__ == "__main__":
