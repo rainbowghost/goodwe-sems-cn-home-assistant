@@ -323,11 +323,19 @@ class SemsApi:
         params: dict | None = None,
         validate_code: bool = True,
     ) -> dict | None:
-        """Single HTTP call with rate-limit detection.
+        """Single HTTP call with rate-limit detection and C0602 recovery.
 
         If ``headers`` is omitted, plant headers are auto-built from
         ``self._token`` (which must already be set via ``_login`` or a
-        prior plant call).
+        prior plant call). The login call itself passes its own headers
+        (the empty login token), so this method is the right place to
+        decide whether C0602 means "credentials wrong" (login) or
+        "stale token" (plant call).
+
+        Recovery: on a C0602 response with a cached ``self._token``,
+        the token is invalidated, a fresh login is performed, and the
+        request is retried once. On any other error code the call is
+        not retried.
         """
         if headers is None:
             if not isinstance(self._token, dict):
@@ -337,6 +345,68 @@ class SemsApi:
                 return None
             headers = _build_headers(self._token)
 
+        body = self._do_http(method, url, headers=headers, json_body=json_body, params=params)
+        if body is None:
+            return None
+
+        # Rate limit: GY0429 (global) or 100025 (CN plant: token expired
+        # or scope rejected). Propagate so the coordinator can back off.
+        if str(body.get("code")) in (_RATE_LIMIT_CODE, _NO_ACCESS_CODE):
+            _LOGGER.warning(
+                "SEMS %s %s: rate-limited (code=%s)",
+                method, url, body.get("code"),
+            )
+            raise SemsRateLimitedError(retry_after=_RATE_LIMIT_RETRY_AFTER)
+
+        # C0602 on a non-login call: cached token is bad. Invalidate,
+        # re-login, retry once. The login POST itself uses explicit
+        # headers (no cached token), so this branch can't fire for it.
+        if body.get("code") == "C0602" and isinstance(self._token, dict) and headers is not None:
+            _LOGGER.info(
+                "SEMS %s %s returned C0602 with cached token; re-logging in and retrying",
+                method, url,
+            )
+            self._token = None
+            new_token = self._login()
+            if new_token is not None:
+                retry_headers = _build_headers(
+                    new_token,
+                    with_content_type=json_body is not None,
+                )
+                body = self._do_http(
+                    method, url, headers=retry_headers,
+                    json_body=json_body, params=params,
+                )
+                if body is None:
+                    return None
+                if str(body.get("code")) in (_RATE_LIMIT_CODE, _NO_ACCESS_CODE):
+                    raise SemsRateLimitedError(retry_after=_RATE_LIMIT_RETRY_AFTER)
+            else:
+                _LOGGER.warning("Re-login after C0602 failed; giving up")
+
+        if validate_code and str(body.get("code")) not in {str(c) for c in _SUCCESS_CODES}:
+            _LOGGER.error(
+                "SEMS %s %s returned code=%s msg=%s",
+                method, url, body.get("code"), body.get("msg"),
+            )
+            return None
+
+        return body
+
+    def _do_http(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict,
+        json_body: dict | None,
+        params: dict | None,
+    ) -> dict | None:
+        """Pure HTTP call. Returns parsed JSON body or None on parse failure.
+
+        Network exceptions propagate so the coordinator's UpdateFailed
+        machinery can surface them.
+        """
         try:
             _LOGGER.debug("SEMS %s %s", method, url)
             r = requests.request(
@@ -352,29 +422,9 @@ class SemsApi:
             raise
 
         try:
-            body = r.json()
+            return r.json()
         except ValueError:
-            _LOGGER.error("SEMS %s %s: non-JSON response (HTTP %s)", method, url, r.status_code)
-            return None
-
-        if str(body.get("code")) == _RATE_LIMIT_CODE:
-            _LOGGER.warning("SEMS rate limit hit on %s %s", method, url)
-            raise SemsRateLimitedError(retry_after=_RATE_LIMIT_RETRY_AFTER)
-
-        if str(body.get("code")) == _NO_ACCESS_CODE:
-            # On CN plant endpoints this means token expired or scope
-            # rejected. Caller should re-login.
-            _LOGGER.warning(
-                "SEMS %s %s: no_access (code 100025) — token likely expired",
-                method, url,
-            )
-            raise SemsRateLimitedError(retry_after=_RATE_LIMIT_RETRY_AFTER)
-
-        if validate_code and str(body.get("code")) not in {str(c) for c in _SUCCESS_CODES}:
             _LOGGER.error(
-                "SEMS %s %s returned code=%s msg=%s",
-                method, url, body.get("code"), body.get("msg"),
+                "SEMS %s %s: non-JSON response (HTTP %s)", method, url, r.status_code
             )
             return None
-
-        return body

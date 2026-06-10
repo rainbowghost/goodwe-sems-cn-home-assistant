@@ -193,15 +193,6 @@ def sensor_options_for_data(
                 UnitOfEnergy.KILO_WATT_HOUR,
                 SensorStateClass.TOTAL_INCREASING,
             ),
-            SemsInverterSensorType(
-                device_info,
-                f"{serial_number}-lastmonthetotle",
-                [*path_to_inverter, "lastmonthetotle"],
-                "Energy Last Month",
-                SensorDeviceClass.ENERGY,
-                UnitOfEnergy.KILO_WATT_HOUR,
-                SensorStateClass.TOTAL_INCREASING,
-            ),
         ]
         # Multiple strings
         sensors += [

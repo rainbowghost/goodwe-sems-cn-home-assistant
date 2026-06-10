@@ -357,6 +357,50 @@ class TestSemsApiUnit:
             assert base == "https://hz-gateway.sems.com.cn/web/sems"
             mock_login.assert_not_called()
 
+    def test_request_C0602_triggers_relogin_and_retry(self):
+        """C0602 on a plant call with a cached token should invalidate the
+        token, re-login, and retry the request once."""
+        self.api._token = _token_dict("stale-token")
+
+        # First call: C0602 (stale token). Second call (after re-login):
+        # success. Login is mocked so the test stays offline.
+        with patch.object(
+            self.api, "_login", return_value=_token_dict("fresh-token")
+        ) as mock_login, patch.object(
+            self.api, "_do_http", side_effect=[
+                {"code": "C0602", "msg": "account login abnormal"},
+                {"code": "00000", "data": ["ok"]},
+            ]
+        ) as mock_http:
+            resp = self.api._request(
+                "POST", "https://hz-gateway.sems.com.cn/web/sems/x",
+            )
+
+        assert resp == {"code": "00000", "data": ["ok"]}
+        # Two HTTP calls: failed first, then retry after re-login.
+        assert mock_http.call_count == 2
+        # Re-login was triggered exactly once.
+        mock_login.assert_called_once()
+        # Token was refreshed.
+        assert self.api._token["token"] == "fresh-token"
+
+    def test_request_C0602_without_cached_token_does_not_retry(self):
+        """C0602 on the login call itself should not trigger another login
+        (would loop forever). The call returns None."""
+        self.api._token = None
+        with patch.object(
+            self.api, "_do_http",
+            return_value={"code": "C0602", "msg": "bad creds"},
+        ) as mock_http, patch.object(self.api, "_login") as mock_login:
+            resp = self.api._request(
+                "POST", _LOGIN_URL,
+                headers={"token": "empty"},
+            )
+        assert resp is None
+        # Only the original HTTP call; no re-login attempt.
+        assert mock_http.call_count == 1
+        mock_login.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Integration tests — request against a mocked server

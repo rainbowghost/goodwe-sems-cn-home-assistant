@@ -1,3 +1,27 @@
+## [2.0.3] - 2026-06-10
+
+### Removed
+
+- **Inverter control switch** (`switch.py` removed). The SEMS+ control
+  endpoint is undocumented, region-specific, and a wrong command could
+  leave the inverter stuck in downtime mode. The integration is now
+  read-only — control the inverter through the official GoodWe
+  app/portal instead.
+- **`<sn>-lastmonthetotle` sensor**. The plant API does not expose
+  per-station last-month data (only today / week / month / year /
+  lifetime). The sensor could never have had a value.
+
+### Fixed
+
+- **Automatic re-login on `C0602`**. When a plant call returns the
+  `account_login_abnormal` code (typically a stale token the server
+  has invalidated), the client now invalidates the cached token, runs
+  a fresh `cross-login`, and retries the request once before
+  surfacing the error. The login call itself still propagates `C0602`
+  immediately (re-trying a fresh login would loop forever).
+
+[2.0.3]: https://github.com/rainbowghost/goodwe-sems-cn-home-assistant/releases/tag/v2.0.3
+
 ## [2.0.2] - 2026-06-10
 
 ### Fixed

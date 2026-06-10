@@ -243,7 +243,6 @@ def _flatten_inverter(
         "etotal": num(tc.get("proPvStatsTotal")),
         "hour_total": num(tl.get("hTotal")),
         "thismonthetotle": num(tc.get("proPvStatsMonth")),
-        "lastmonthetotle": num(tc.get("proPvStatsLastMonth")),
         # telemetry (live operating data) — kW / kVar factors converted to W / var
         "pac": kw_to_w(tl.get("pAc")),
         "qac": kw_to_w(tl.get("qAc")),

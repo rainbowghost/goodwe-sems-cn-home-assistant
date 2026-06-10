@@ -7,7 +7,7 @@ from homeassistant.const import CONF_PASSWORD, CONF_SCAN_INTERVAL, CONF_USERNAME
 
 DOMAIN = "sems_cn"
 
-PLATFORMS = ["sensor", "switch"]
+PLATFORMS = ["sensor"]
 
 CONF_STATION_ID = "powerstation_id"
 
@@ -43,7 +43,6 @@ FACTOR_CODES = {
     "energy_today": "proPvStatsToday",
     "energy_total": "proPvStatsTotal",
     "energy_month": "proPvStatsMonth",
-    "energy_last_month": "proPvStatsLastMonth",
     "energy_week": "proPvStatsWeek",
     "energy_year": "proPvStatsYear",
     # telemetry group aliases
