@@ -1,3 +1,34 @@
+## [2.0.4] - 2026-06-10
+
+### Fixed
+
+- **Inverter status labels**. The legacy `gopsapi` API had a 4-state
+  status (Offline / Waiting / Normal / Fault). The new SEMS+ plant
+  API returns an 0-indexed enumeration with 10 distinct states,
+  reverse-engineered from the GoodWe web frontend's status-icons
+  table:
+
+  | code | label | (web nameKey) |
+  |---|---|---|
+  | 0 | Offline | `offline` |
+  | 1 | Online | `online` |
+  | 2 | Fault | `fault` |
+  | 3 | Awaiting | `await` |
+  | 4 | Shutdown | `shutdown` |
+  | 5 | Running | `running` |
+  | 6 | Charging | `charging_1` |
+  | 7 | Discharging | `discharging` |
+  | 8 | Available | `available` |
+  | 9 | Maintenance | `in_maintenance_status` |
+
+  v2.0.0–2.0.3 still had the 4-state mapping, so any status code
+  outside `{-1, 0, 1, 2}` (in particular `5 = Running`, the most
+  common state for an actively-producing inverter) fell through to
+  `"Unknown"`. v2.0.4 replaces the mapping with the full 10-state
+  table.
+
+[2.0.4]: https://github.com/rainbowghost/goodwe-sems-cn-home-assistant/releases/tag/v2.0.4
+
 ## [2.0.3] - 2026-06-10
 
 ### Removed

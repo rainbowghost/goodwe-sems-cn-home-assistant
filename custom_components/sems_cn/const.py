@@ -31,7 +31,22 @@ AC_EMPTY = 6553.5
 AC_CURRENT_EMPTY = 6553.5
 AC_FEQ_EMPTY = 655.35
 
-STATUS_LABELS = {-1: "Offline", 0: "Waiting", 1: "Normal", 2: "Fault"}
+# Inverter status codes from the SEMS+ plant API / web frontend.
+# Confirmed against the live GoodWe app/web status-icons table. The
+# legacy gopsapi 4-state mapping ({-1, 0, 1, 2}) is replaced — the
+# new API uses an 0-indexed enumeration with 10 distinct values.
+STATUS_LABELS = {
+    0: "Offline",             # nameKey "offline"            离线
+    1: "Online",              # nameKey "online"             在线
+    2: "Fault",               # nameKey "fault"              故障
+    3: "Awaiting",            # nameKey "await"              待机
+    4: "Shutdown",            # nameKey "shutdown"           停机
+    5: "Running",             # nameKey "running"            运行
+    6: "Charging",            # nameKey "charging_1"         充电
+    7: "Discharging",         # nameKey "discharging"        放电
+    8: "Available",           # nameKey "available"          空闲
+    9: "Maintenance",         # nameKey "in_maintenance_status" 维护中
+}
 
 
 # Plant API factor codes. One source of truth for the new factor names
