@@ -202,24 +202,6 @@ def sensor_options_for_data(
                 UnitOfEnergy.KILO_WATT_HOUR,
                 SensorStateClass.TOTAL_INCREASING,
             ),
-            SemsInverterSensorType(
-                device_info,
-                f"{serial_number}-iday",
-                [*path_to_inverter, "iday"],
-                "Income Today",
-                SensorDeviceClass.MONETARY,
-                currency,
-                SensorStateClass.TOTAL,
-            ),
-            SemsInverterSensorType(
-                device_info,
-                f"{serial_number}-itotal",
-                [*path_to_inverter, "itotal"],
-                "Income Total",
-                SensorDeviceClass.MONETARY,
-                currency,
-                SensorStateClass.TOTAL,
-            ),
         ]
         # Multiple strings
         sensors += [
@@ -281,15 +263,14 @@ def sensor_options_for_data(
         sensors += [
             SemsInverterSensorType(
                 device_info,
-                f"{serial_number}-fac{idx}",
-                [*path_to_inverter, f"fac{idx}"],
-                f"Grid {idx} AC Frequency",
+                f"{serial_number}-grid_ac_frequency",
+                [*path_to_inverter, "fac"],
+                "Grid AC Frequency",
                 SensorDeviceClass.FREQUENCY,
                 UnitOfFrequency.HERTZ,
                 SensorStateClass.MEASUREMENT,
                 AC_FEQ_EMPTY,
-            )
-            for idx in range(1, 4)
+            ),
         ]
         sensors += [
             SemsInverterSensorType(

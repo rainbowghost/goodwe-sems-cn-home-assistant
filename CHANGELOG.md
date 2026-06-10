@@ -1,3 +1,23 @@
+## [2.0.2] - 2026-06-10
+
+### Fixed
+
+- **Grid AC frequency sensor**. The new plant API exposes a single grid
+  frequency value (factor `Fac`), not one per phase as the legacy
+  gopsapi API did. v2.0.0/2.0.1 defined `<sn>-fac1`/2/3 but the
+  coordinator only provided a single `fac` key, so all three sensors
+  returned `None`. v2.0.2 collapses them into a single sensor
+  `<sn>-grid_ac_frequency` reading the one available `Fac` factor.
+
+### Removed
+
+- **Income sensors** `<sn>-iday` (Income Today) and `<sn>-itotal`
+  (Income Total). The SEMS+ plant API does not expose per-station
+  income data, so these sensors could never have a value. Removing
+  them up front avoids a `unavailable` entity in Home Assistant.
+
+[2.0.2]: https://github.com/rainbowghost/goodwe-sems-cn-home-assistant/releases/tag/v2.0.2
+
 # Changelog
 
 ## [2.0.1] - 2026-06-10
