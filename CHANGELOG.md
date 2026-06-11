@@ -1,3 +1,24 @@
+## [2.0.8] - 2026-06-11
+
+### Fixed
+
+- **Diagnostics redaction now covers config-entry credentials.** The
+  diagnostics download previously redacted the SEMS+ login token but
+  not the user's `username` and `password` stored in
+  `config_entry.data`. Both are now in the `TO_REDACT` set, so the
+  downloaded JSON shows them as `**REDACTED**` instead of cleartext.
+
+### Added
+
+- **`raw_all_status` in diagnostics JSON.** The coordinator now keeps
+  the per-station device list (the response of `get_devices`) verbatim
+  and surfaces it under `coordinator.raw_all_status` in the
+  diagnostics file, alongside `raw_telecounting` and `raw_telemetry`.
+  Useful for debugging inverter-status mapping issues where the
+  `statusDetailList` shape is unexpected.
+
+[2.0.8]: https://github.com/rainbowghost/goodwe-sems-cn-home-assistant/releases/tag/v2.0.8
+
 ## [2.0.7] - 2026-06-10
 
 ### Added

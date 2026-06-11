@@ -21,11 +21,14 @@ from homeassistant.core import HomeAssistant
 
 from . import SemsConfigEntry
 
-# Fields to redact from the downloaded JSON. ``token`` and the
-# ``api`` gateway URL expose credentials the user has explicitly
-# trusted to this integration; keeping them out of shared bug
-# reports is just hygiene.
+# Fields to redact from the downloaded JSON. Covers both
+# ``config_entry.data`` (the user-typed ``password``) and the
+# ``token`` dict returned by the SEMS+ cross-login API
+# (``token`` field, login ``uid``/``timestamp``/``api``/``account``/
+# ``pwd``).
 TO_REDACT = {
+    "password",
+    "username",
     "uid",
     "token",
     "timestamp",
@@ -58,6 +61,7 @@ async def async_get_config_entry_diagnostics(
     inverters = data.inverters if data else {}
     raw_telecounting = data.raw_telecounting if data else {}
     raw_telemetry = data.raw_telemetry if data else {}
+    raw_all_status = data.raw_all_status if data else {}
 
     return {
         "entry": async_redact_data(dict(entry.data), TO_REDACT),
@@ -66,5 +70,6 @@ async def async_get_config_entry_diagnostics(
             "inverters": async_redact_data(inverters, TO_REDACT),
             "raw_telecounting": async_redact_data(raw_telecounting, TO_REDACT),
             "raw_telemetry": async_redact_data(raw_telemetry, TO_REDACT),
+            "raw_all_status": async_redact_data(raw_all_status, TO_REDACT),
         },
     }

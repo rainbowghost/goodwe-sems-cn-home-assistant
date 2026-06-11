@@ -7,6 +7,7 @@ tests use ``requests_mock`` to exercise the real SEMS+ URL and payload
 shapes documented at ``E:/Code/sems-plus-api.md``.
 """
 
+import json
 from unittest.mock import Mock, patch
 
 import pytest
@@ -537,6 +538,57 @@ class TestSemsApiUnit:
         # Only the original HTTP call; no re-login attempt.
         assert mock_http.call_count == 1
         mock_login.assert_not_called()
+
+    def test_diagnostics_redacts_password(self):
+        """The downloaded diagnostics must not include the user's password
+        or API token in cleartext. The config_entry.data dict holds the
+        password under the ``password`` key; the SEMS+ token dict holds
+        it under ``pwd``/``token``."""
+        import asyncio
+        from unittest.mock import MagicMock
+
+        from custom_components.sems_cn.diagnostics import (
+            async_get_config_entry_diagnostics,
+        )
+
+        class FakeCoord:
+            def __init__(self, d):
+                self.data = d
+                self.last_update_success = True
+
+        class FakeEntry:
+            def __init__(self):
+                self.data = {
+                    "username": "user@example.com",
+                    "password": "supersecret",
+                }
+                self.runtime_data = None
+
+        class FakeData:
+            def __init__(self):
+                self.inverters = {"sn1": {"status": 5, "pac": "1000"}}
+                self.raw_telecounting = {
+                    "sn1": [{"code": "telecounting_real", "factors": []}]
+                }
+                self.raw_telemetry = {"sn1": [{"code": "system", "factors": []}]}
+                self.raw_all_status = {"station1": []}
+
+        fake = FakeEntry()
+        fake.runtime_data = type("RD", (), {"coordinator": FakeCoord(FakeData())})()
+        result = asyncio.run(
+            async_get_config_entry_diagnostics(MagicMock(), fake)
+        )
+
+        # entry.username + entry.password must be redacted
+        assert result["entry"]["username"] == "**REDACTED**"
+        assert result["entry"]["password"] == "**REDACTED**"
+        # the secrets must not appear anywhere in the dump
+        assert "supersecret" not in json.dumps(result)
+        assert "user@example.com" not in json.dumps(result)
+        # inverters values are NOT credentials, so they should pass
+        # through unchanged
+        assert result["coordinator"]["inverters"]["sn1"]["status"] == 5
+        assert result["coordinator"]["inverters"]["sn1"]["pac"] == "1000"
 
 
 # ---------------------------------------------------------------------------

@@ -55,12 +55,13 @@ class SemsData:
     """Coordinator payload shape consumed by sensors / switch."""
 
     inverters: dict[str, dict[str, Any]]  # SN → flattened factor dict
-    # Raw plant API factor groups, kept verbatim for the diagnostics
+    # Raw plant API responses, kept verbatim for the diagnostics
     # download endpoint. Not consumed by sensors (they read the
     # flattened ``inverters`` dict), but useful when investigating
     # missing factors or unexpected values.
     raw_telecounting: dict[str, list[dict[str, Any]]]
     raw_telemetry: dict[str, list[dict[str, Any]]]
+    raw_all_status: dict[str, list[dict[str, Any]]]  # station_id → device entries
     homekit: dict[str, Any] | None = None  # always None for SEMS+ plant API
     currency: str | None = None  # not exposed by plant API
 
@@ -127,6 +128,7 @@ class SemsDataUpdateCoordinator(DataUpdateCoordinator[SemsData]):
             inverters=data["inverters"],
             raw_telecounting=data.get("raw_telecounting", {}),
             raw_telemetry=data.get("raw_telemetry", {}),
+            raw_all_status=data.get("raw_all_status", {}),
             homekit=None,
             currency=None,
         )
@@ -138,29 +140,60 @@ class SemsDataUpdateCoordinator(DataUpdateCoordinator[SemsData]):
         ``{sn: legacy_key_dict}`` so sensors don't need changes."""
         stations = self.api.get_stations()
         if not stations:
-            return {"inverters": {}, "raw_telecounting": {}, "raw_telemetry": {}}
+            return {
+                "inverters": {},
+                "raw_telecounting": {},
+                "raw_telemetry": {},
+                "raw_all_status": {},
+            }
 
         inverters: dict[str, dict[str, Any]] = {}
         raw_telecounting: dict[str, list[dict[str, Any]]] = {}
         raw_telemetry: dict[str, list[dict[str, Any]]] = {}
+        raw_all_status: dict[str, list[dict[str, Any]]] = {}
         for station in stations:
             station_id = station.get("id")
             if not isinstance(station_id, str):
                 continue
             devices = self.api.get_devices(station_id)
+            raw_all_status[station_id] = devices
             if not devices:
                 continue
             for entry in devices:
                 if entry.get("deviceType") != "INVERTER":
                     continue
-                sn_list = entry.get("statusDetailList", [{}])[0].get("snList") or []
+                # Read the group-level status from the first
+                # statusDetailList entry. The same status is repeated
+                # inside detailMap[sn].status but reading it from the
+                # group avoids one level of indirection.
+                status_group = entry.get("statusDetailList") or []
+                if not status_group:
+                    _LOGGER.debug(
+                        "device entry for station %s has empty statusDetailList; "
+                        "status will be missing",
+                        station_id,
+                    )
+                    status_value: Any = None
+                else:
+                    raw_status = status_group[0].get("status")
+                    if raw_status is None:
+                        _LOGGER.debug(
+                            "statusDetailList[0] has no 'status' field for "
+                            "station %s — inverter entry: %s",
+                            station_id,
+                            entry,
+                        )
+                    status_value = raw_status
+
+                sn_list = status_group[0].get("snList") if status_group else None
                 if not sn_list:
+                    _LOGGER.debug(
+                        "station %s device entry has no snList[0]; entry: %s",
+                        station_id,
+                        entry,
+                    )
                     continue
                 sn = sn_list[0]
-                detail = entry.get("detailMap", {}).get(sn) or {}
-                status = (
-                    detail.get("status") if isinstance(detail, dict) else None
-                ) or 0
 
                 # Per-inverter refresh.
                 telecounting = self.api.get_telecounting(sn, station_id) or []
@@ -169,7 +202,7 @@ class SemsDataUpdateCoordinator(DataUpdateCoordinator[SemsData]):
                 flat = _flatten_inverter(
                     sn=sn,
                     station=station,
-                    status=status,
+                    status=status_value,
                     telecounting_groups=telecounting,
                     telemetry_groups=telemetry,
                 )
@@ -181,6 +214,7 @@ class SemsDataUpdateCoordinator(DataUpdateCoordinator[SemsData]):
             "inverters": inverters,
             "raw_telecounting": raw_telecounting,
             "raw_telemetry": raw_telemetry,
+            "raw_all_status": raw_all_status,
         }
 
 
