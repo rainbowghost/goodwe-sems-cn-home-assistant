@@ -7,13 +7,17 @@ tests use ``requests_mock`` to exercise the real SEMS+ URL and payload
 shapes documented at ``E:/Code/sems-plus-api.md``.
 """
 
+import asyncio
 import json
 from unittest.mock import Mock, patch
 
 import pytest
 import requests
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 
 from custom_components.sems_cn import _flatten_inverter
+from custom_components.sems_cn.config_flow import validate_input
+from custom_components.sems_cn.const import CONF_STATION_ID
 from custom_components.sems_cn.sems_api import (
     _APP_VERSION,
     _LOGIN_URL,
@@ -146,8 +150,17 @@ def _information_payload(
             {"code": "sn", "data": MOCK_INVERTER_SN, "alias": "serial_number_1"},
             {"code": "deviceType", "data": "INVERTER_GRID", "alias": "type"},
             {"code": "modelType", "data": model_type, "alias": "model"},
-            {"code": "safetyVersion", "data": safety_version, "alias": "firmware_version"},
-            {"code": "ratedPower", "data": "10.0", "unit": "kW", "alias": "rated_power"},
+            {
+                "code": "safetyVersion",
+                "data": safety_version,
+                "alias": "firmware_version",
+            },
+            {
+                "code": "ratedPower",
+                "data": "10.0",
+                "unit": "kW",
+                "alias": "rated_power",
+            },
         ],
     }
 
@@ -485,7 +498,7 @@ class TestSemsApiUnit:
         self.api._token = _token_dict()
         self.api.get_stations()
 
-        url = mock_request.call_args.kwargs["url"] or mock_request.call_args.args[0]
+        url = mock_request.call_args.args[1]
         assert "/sems-plant/api/app/v2/stations/page" in url
         body = mock_request.call_args.kwargs["json"]
         assert body == {"current": 1, "size": 100}
@@ -519,7 +532,9 @@ class TestSemsApiUnit:
         assert mock_request.call_count == 1
         # Path and query string match the captured plant API.
         url = mock_request.call_args.args[1]
-        assert url.endswith(f"/sems-plant/api/equipments/{MOCK_INVERTER_SN}/information")
+        assert url.endswith(
+            f"/sems-plant/api/equipments/{MOCK_INVERTER_SN}/information"
+        )
         assert mock_request.call_args.kwargs["params"] == {
             "deviceType": "INVERTER",
             "pwId": MOCK_STATION_ID,
@@ -556,7 +571,7 @@ class TestSemsApiUnit:
         self.api._token = _token_dict()
         self.api.change_status(MOCK_INVERTER_SN, "2")
 
-        body = mock_request.call_args.kwargs["json_body"]
+        body = mock_request.call_args.kwargs["json"]
         assert body == {
             "InverterSN": MOCK_INVERTER_SN,
             "InverterStatusSettingMark": "1",
@@ -670,9 +685,7 @@ class TestSemsApiUnit:
 
         fake = FakeEntry()
         fake.runtime_data = type("RD", (), {"coordinator": FakeCoord(FakeData())})()
-        result = asyncio.run(
-            async_get_config_entry_diagnostics(MagicMock(), fake)
-        )
+        result = asyncio.run(async_get_config_entry_diagnostics(MagicMock(), fake))
 
         # entry.username + entry.password must be redacted
         assert result["entry"]["username"] == "**REDACTED**"
@@ -684,6 +697,54 @@ class TestSemsApiUnit:
         # through unchanged
         assert result["coordinator"]["inverters"]["sn1"]["status"] == 5
         assert result["coordinator"]["inverters"]["sn1"]["pac"] == "1000"
+
+
+class TestConfigFlowValidation:
+    """Config-flow validation against the current SEMS+ station API."""
+
+    class FakeHass:
+        async def async_add_executor_job(self, func, *args):
+            return func(*args)
+
+    def test_validate_input_uses_provided_station_id(self):
+        data = {
+            CONF_USERNAME: "user",
+            CONF_PASSWORD: "pass",
+            CONF_STATION_ID: MOCK_STATION_ID,
+        }
+        with (
+            patch(
+                "custom_components.sems_cn.config_flow.SemsApi.test_authentication",
+                return_value=True,
+            ),
+            patch(
+                "custom_components.sems_cn.config_flow.SemsApi.get_stations"
+            ) as mock_get_stations,
+        ):
+            result = asyncio.run(validate_input(self.FakeHass(), data))
+
+        assert result[CONF_STATION_ID] == MOCK_STATION_ID
+        mock_get_stations.assert_not_called()
+
+    def test_validate_input_selects_first_station_when_missing(self):
+        data = {
+            CONF_USERNAME: "user",
+            CONF_PASSWORD: "pass",
+        }
+        with (
+            patch(
+                "custom_components.sems_cn.config_flow.SemsApi.test_authentication",
+                return_value=True,
+            ),
+            patch(
+                "custom_components.sems_cn.config_flow.SemsApi.get_stations",
+                return_value=_stations_payload()["data"]["dataList"],
+            ),
+        ):
+            result = asyncio.run(validate_input(self.FakeHass(), data))
+
+        assert result[CONF_STATION_ID] == MOCK_STATION_ID
+        assert CONF_STATION_ID not in data
 
 
 # ---------------------------------------------------------------------------

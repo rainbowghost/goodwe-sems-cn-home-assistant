@@ -15,6 +15,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .const import (
     CONF_SCAN_INTERVAL,
+    CONF_STATION_ID,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     PLATFORMS,
@@ -98,6 +99,7 @@ class SemsDataUpdateCoordinator(DataUpdateCoordinator[SemsData]):
 
     def __init__(self, hass: HomeAssistant, api: SemsApi, entry: ConfigEntry) -> None:
         self.api = api
+        self.station_id = entry.data.get(CONF_STATION_ID)
         update_interval = timedelta(
             seconds=entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
         )
@@ -146,6 +148,11 @@ class SemsDataUpdateCoordinator(DataUpdateCoordinator[SemsData]):
                 "raw_telemetry": {},
                 "raw_all_status": {},
             }
+
+        if self.station_id:
+            stations = [
+                station for station in stations if station.get("id") == self.station_id
+            ]
 
         inverters: dict[str, dict[str, Any]] = {}
         raw_telecounting: dict[str, list[dict[str, Any]]] = {}

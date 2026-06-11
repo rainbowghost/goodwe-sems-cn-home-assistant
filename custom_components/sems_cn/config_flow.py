@@ -44,15 +44,28 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     if not authenticated:
         raise InvalidAuth
 
-    # If optional station ID is not provided, query the SEMS API for the first found
-    if CONF_STATION_ID not in data:
+    data = dict(data)
+
+    # If optional station ID is not provided, query the SEMS API for the first found.
+    if not data.get(CONF_STATION_ID):
         _LOGGER.debug(
             "SEMS - No station ID provided, query SEMS API, using first found"
         )
-        powerStationId = await hass.async_add_executor_job(api.getPowerStationIds)
-        _LOGGER.debug("SEMS - Found power station IDs: %s", powerStationId)
+        stations = await hass.async_add_executor_job(api.get_stations)
+        _LOGGER.debug("SEMS - Found stations: %s", stations)
 
-        data[CONF_STATION_ID] = powerStationId
+        station_id = next(
+            (
+                station.get("id")
+                for station in stations or []
+                if isinstance(station.get("id"), str) and station.get("id")
+            ),
+            None,
+        )
+        if station_id is None:
+            raise CannotConnect
+
+        data[CONF_STATION_ID] = station_id
 
     # Return info that you want to store in the config entry.
     _LOGGER.debug("SEMS - validate_input Returning data: %s", mask_password(data))

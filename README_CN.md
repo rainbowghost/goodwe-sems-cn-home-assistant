@@ -47,17 +47,9 @@
 手动找电站 ID：登录 [https://semsplus.goodwe.com](https://semsplus.goodwe.com)，
 URL 里的 UUID 就是电站 ID。
 
-### 可选：通过 switch 实体控制逆变器开关
+### 推荐：使用 Visitor 账号
 
-可以通过逆变器的"停机"功能临时停止发电。集成以 switch 实体的形式暴露，
-可以在自动化里调用。
-
-注意：这个调用的是非公开接口，逆变器端要几分钟才会响应。从停机状态恢复
-到发电大约需要 60 秒。
-
-### 推荐：只读场景用 Visitor 账号
-
-如果你只需要读数据，不要控制开关，建议创建一个 Visitor（只读）账号。
+本集成是只读的，建议创建一个 Visitor（只读）账号。
 
 在官方 GoodWe app 或网页端创建：登录
 [https://semsplus.goodwe.com](https://semsplus.goodwe.com)，到 visitor 账号页面

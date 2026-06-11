@@ -1,7 +1,8 @@
-"""Tests for SEMS sensor entities (Home Assistant integration-style)."""
+"""Tests for SEMS sensor entities."""
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from unittest.mock import patch
 
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
@@ -9,55 +10,110 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.sems_cn import SemsData
 from custom_components.sems_cn.const import CONF_STATION_ID, DOMAIN
-from custom_components.sems_cn.sensor import sensor_options_for_data
-
-from .fixtures import (
-    MOCK_GET_DATA_ACTUAL_JSON,
-    MOCK_GET_DATA_HOMEKIT_ACTUAL_JSON,
-)
 
 MOCK_POWER_STATION_ID = "12345678-1234-5678-9abc-123456789abc"
+MOCK_OTHER_POWER_STATION_ID = "87654321-4321-8765-cba9-987654321cba"
+MOCK_INVERTER_SN = "GW0000SN000TEST1"
+MOCK_OTHER_INVERTER_SN = "GW0000SN000TEST2"
 
-# Coordinator-compatible getData() result (this corresponds to SemsApi.getData() return value)
-MOCK_GET_DATA_RESULT_MINIMAL = {
-    "inverter": [
+
+def _station(station_id: str = MOCK_POWER_STATION_ID) -> dict:
+    return {
+        "id": station_id,
+        "name": f"Station {station_id[-4:]}",
+        "installedPower": "10",
+    }
+
+
+def _devices(sn: str = MOCK_INVERTER_SN) -> list[dict]:
+    return [
         {
-            "invert_full": {
-                "name": "Test Inverter",
-                "sn": "GW0000SN000TEST1",
-                "powerstation_id": MOCK_POWER_STATION_ID,
-                "status": 1,
-                "capacity": 3.0,
-                "pac": 589,
-                "etotal": 18843.2,
-                "hour_total": 1234,
-                "tempperature": 32.0,
-                "eday": 8.9,
-                "thismonthetotle": 85.7,
-                "lastmonthetotle": 76.8,
-                "iday": 1.96,
-                "itotal": 4145.5,
-            }
+            "deviceType": "INVERTER",
+            "statusDetailList": [
+                {
+                    "status": 5,
+                    "snList": [sn],
+                    "detailMap": {
+                        sn: {
+                            "sn": sn,
+                            "name": "Inverter 1",
+                            "deviceType": "INVERTER",
+                            "status": 5,
+                        }
+                    },
+                }
+            ],
         }
-    ],
-    "kpi": {
-        "currency": "EUR",
-        "total_power": 18843.2,
-    },
-    "hasPowerflow": False,
-    "hasEnergeStatisticsCharts": False,
-}
+    ]
 
 
-async def test_sensor_state_from_coordinator(
-    hass: HomeAssistant,
-    enable_custom_integrations: None,
-) -> None:
-    """Test that the power sensor is created and has the expected state."""
-    del enable_custom_integrations
-    entry = MockConfigEntry(
+def _telecounting() -> list[dict]:
+    return [
+        {
+            "code": "telecounting_real",
+            "factors": [
+                {"code": "pAc", "data": "6.895", "unit": "kW"},
+                {"code": "ratedPower", "data": "10", "unit": "kW"},
+            ],
+        },
+        {
+            "code": "telecounting_today",
+            "factors": [{"code": "proPvStatsToday", "data": "27.7", "unit": "kWh"}],
+        },
+        {
+            "code": "telecounting_month",
+            "factors": [{"code": "proPvStatsMonth", "data": "345.6", "unit": "kWh"}],
+        },
+        {
+            "code": "telecounting_total",
+            "factors": [{"code": "proPvStatsTotal", "data": "17777.2", "unit": "kWh"}],
+        },
+    ]
+
+
+def _telemetry() -> list[dict]:
+    return [
+        {
+            "code": "system",
+            "factors": [
+                {"code": "hTotal", "data": "7471", "unit": "H"},
+                {"code": "Temperature", "data": "48.1", "unit": "C"},
+            ],
+        },
+        {
+            "code": "ac",
+            "factors": [
+                {"code": "Fac", "data": "50.01", "unit": "Hz"},
+                {"code": "PHASE-A:Vac", "data": "232.1", "unit": "V"},
+                {"code": "PHASE-B:Vac", "data": "231.8", "unit": "V"},
+                {"code": "PHASE-C:Vac", "data": "233.0", "unit": "V"},
+                {"code": "PHASE-A:Iac", "data": "12.2", "unit": "A"},
+                {"code": "PHASE-B:Iac", "data": "12.0", "unit": "A"},
+                {"code": "PHASE-C:Iac", "data": "12.4", "unit": "A"},
+            ],
+        },
+        {
+            "code": "pv",
+            "factors": [
+                {"code": "MPPT-1:Vpv", "data": "510.1", "unit": "V"},
+                {"code": "MPPT-2:Vpv", "data": "511.2", "unit": "V"},
+                {"code": "MPPT-1:Ipv", "data": "6.3", "unit": "A"},
+                {"code": "MPPT-2:Ipv", "data": "6.4", "unit": "A"},
+            ],
+        },
+    ]
+
+
+def _information() -> list[dict]:
+    return [
+        {"code": "modelType", "data": "GW10K-SDT-30"},
+        {"code": "safetyVersion", "data": "V1.08.08"},
+    ]
+
+
+def _entry() -> MockConfigEntry:
+    return MockConfigEntry(
         domain=DOMAIN,
         title="Test",
         data={
@@ -66,244 +122,187 @@ async def test_sensor_state_from_coordinator(
             CONF_STATION_ID: MOCK_POWER_STATION_ID,
         },
     )
+
+
+def _mock_api(*, stations: list[dict] | None = None, devices_by_station=None):
+    stack = ExitStack()
+    stack.enter_context(
+        patch(
+            "custom_components.sems_cn.sems_api.SemsApi.get_stations",
+            return_value=[_station()] if stations is None else stations,
+        )
+    )
+    get_devices = stack.enter_context(
+        patch("custom_components.sems_cn.sems_api.SemsApi.get_devices")
+    )
+    if devices_by_station is None:
+        get_devices.return_value = _devices()
+    else:
+        get_devices.side_effect = lambda station_id: devices_by_station[station_id]
+    stack.enter_context(
+        patch(
+            "custom_components.sems_cn.sems_api.SemsApi.get_telecounting",
+            return_value=_telecounting(),
+        )
+    )
+    stack.enter_context(
+        patch(
+            "custom_components.sems_cn.sems_api.SemsApi.get_telemetry",
+            return_value=_telemetry(),
+        )
+    )
+    stack.enter_context(
+        patch(
+            "custom_components.sems_cn.sems_api.SemsApi.get_information",
+            return_value=_information(),
+        )
+    )
+    return stack, get_devices
+
+
+async def test_sensor_state_from_current_coordinator(
+    hass: HomeAssistant,
+    enable_custom_integrations: None,
+) -> None:
+    """Power and status sensors are created from SEMS+ plant API payloads."""
+    del enable_custom_integrations
+    entry = _entry()
     entry.add_to_hass(hass)
 
-    with patch(
-        "custom_components.sems_cn.sems_api.SemsApi.getData",
-        return_value=MOCK_GET_DATA_RESULT_MINIMAL,
-    ):
+    stack, _ = _mock_api()
+    with stack:
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
     ent_reg = er.async_get(hass)
-    entity_id = ent_reg.async_get_entity_id(
-        Platform.SENSOR, DOMAIN, "GW0000SN000TEST1-power"
+    power_entity_id = ent_reg.async_get_entity_id(
+        Platform.SENSOR, DOMAIN, f"{MOCK_INVERTER_SN}-power"
     )
-    assert entity_id is not None
+    assert power_entity_id is not None
 
-    state = hass.states.get(entity_id)
-    assert state is not None
-    assert state.state == "589"
-    assert state.attributes.get("unit_of_measurement") == "W"
-    assert state.attributes.get("statusText") == "Normal"
-    assert state.attributes.get("pac") == 589
-
-    # extra_state_attributes should only be exposed on the `-power` entity
-    assert state.attributes.get("capacity") == 3.0
-    assert state.attributes.get("status") == 1
+    power_state = hass.states.get(power_entity_id)
+    assert power_state is not None
+    assert power_state.state == "6895.0"
+    assert power_state.attributes["unit_of_measurement"] == "W"
+    assert power_state.attributes["statusText"] == "Running"
+    assert power_state.attributes["raw_value"] == 5
+    assert power_state.attributes["pac"] == "6895.0"
+    assert power_state.attributes["model_type"] == "GW10K-SDT-30"
+    assert power_state.attributes["safety_version"] == "V1.08.08"
 
     status_entity_id = ent_reg.async_get_entity_id(
-        Platform.SENSOR, DOMAIN, "GW0000SN000TEST1-status"
+        Platform.SENSOR, DOMAIN, f"{MOCK_INVERTER_SN}-status"
     )
     assert status_entity_id is not None
 
     status_state = hass.states.get(status_entity_id)
     assert status_state is not None
-    assert status_state.state == "Normal"
-    assert "pac" not in status_state.attributes
-    assert "statusText" not in status_state.attributes
+    assert status_state.state == "Running"
+
+
+async def test_configured_station_filters_api_calls(
+    hass: HomeAssistant,
+    enable_custom_integrations: None,
+) -> None:
+    """Only the configured station is refreshed when multiple stations exist."""
+    del enable_custom_integrations
+    entry = _entry()
+    entry.add_to_hass(hass)
+
+    stack, get_devices = _mock_api(
+        stations=[
+            _station(MOCK_POWER_STATION_ID),
+            _station(MOCK_OTHER_POWER_STATION_ID),
+        ],
+        devices_by_station={
+            MOCK_POWER_STATION_ID: _devices(MOCK_INVERTER_SN),
+            MOCK_OTHER_POWER_STATION_ID: _devices(MOCK_OTHER_INVERTER_SN),
+        },
+    )
+    with stack:
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    get_devices.assert_called_once_with(MOCK_POWER_STATION_ID)
+
+    ent_reg = er.async_get(hass)
+    assert (
+        ent_reg.async_get_entity_id(
+            Platform.SENSOR, DOMAIN, f"{MOCK_INVERTER_SN}-power"
+        )
+        is not None
+    )
+    assert (
+        ent_reg.async_get_entity_id(
+            Platform.SENSOR, DOMAIN, f"{MOCK_OTHER_INVERTER_SN}-power"
+        )
+        is None
+    )
 
 
 async def test_unique_id_migration_sn_to_sn_power(
     hass: HomeAssistant,
     enable_custom_integrations: None,
 ) -> None:
-    """Test migration from old unique_id `sn` to new `sn-power`."""
+    """The legacy power sensor unique_id `sn` migrates to `sn-power`."""
     del enable_custom_integrations
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="Test",
-        data={
-            CONF_USERNAME: "user",
-            CONF_PASSWORD: "pass",
-            CONF_STATION_ID: MOCK_POWER_STATION_ID,
-        },
-    )
+    entry = _entry()
     entry.add_to_hass(hass)
 
     ent_reg = er.async_get(hass)
     old_entity_id = ent_reg.async_get_or_create(
         Platform.SENSOR,
         DOMAIN,
-        "GW0000SN000TEST1",
+        MOCK_INVERTER_SN,
         config_entry=entry,
     ).entity_id
 
-    with patch(
-        "custom_components.sems_cn.sems_api.SemsApi.getData",
-        return_value=MOCK_GET_DATA_RESULT_MINIMAL,
-    ):
+    stack, _ = _mock_api()
+    with stack:
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
     migrated_entry = ent_reg.async_get(old_entity_id)
     assert migrated_entry is not None
-    assert migrated_entry.unique_id == "GW0000SN000TEST1-power"
+    assert migrated_entry.unique_id == f"{MOCK_INVERTER_SN}-power"
 
 
-async def test_unique_id_migration_powerflow_to_homekit_sn(
+async def test_exact_unique_ids_for_current_sensor_set(
     hass: HomeAssistant,
     enable_custom_integrations: None,
 ) -> None:
-    """Test migration from legacy powerflow unique IDs to HomeKit SN-based IDs."""
+    """The current SEMS+ sensor set does not include removed switch/HomeKit IDs."""
     del enable_custom_integrations
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="Test",
-        data={
-            CONF_USERNAME: "user",
-            CONF_PASSWORD: "pass",
-            CONF_STATION_ID: MOCK_POWER_STATION_ID,
-        },
-    )
+    entry = _entry()
     entry.add_to_hass(hass)
 
-    ent_reg = er.async_get(hass)
-    legacy_unique_ids = [
-        "powerflow-import-energy",
-        "powerflow-export-energy",
-        "powerflow-import-energy-total",
-        "powerflow-export-energy-total",
-    ]
-    legacy_entity_ids = {
-        legacy_unique_id: ent_reg.async_get_or_create(
-            Platform.SENSOR,
-            DOMAIN,
-            legacy_unique_id,
-            config_entry=entry,
-        ).entity_id
-        for legacy_unique_id in legacy_unique_ids
-    }
-
-    with patch(
-        "custom_components.sems_cn.sems_api.SemsApi.getData",
-        return_value=MOCK_GET_DATA_HOMEKIT_ACTUAL_JSON,
-    ):
+    stack, _ = _mock_api()
+    with stack:
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
-    homekit_sn = (
-        MOCK_GET_DATA_HOMEKIT_ACTUAL_JSON.get("homKit", {}).get("sn")
-        or "GW-HOMEKIT-NO-SERIAL"
-    )
-    expected_migrations = {
-        "powerflow-import-energy": f"{homekit_sn}-import-energy",
-        "powerflow-export-energy": f"{homekit_sn}-export-energy",
-        "powerflow-import-energy-total": f"{homekit_sn}-import-energy-total",
-        "powerflow-export-energy-total": f"{homekit_sn}-export-energy-total",
-    }
-
-    for legacy_unique_id, expected_unique_id in expected_migrations.items():
-        migrated_entry = ent_reg.async_get(legacy_entity_ids[legacy_unique_id])
-        assert migrated_entry is not None
-        assert migrated_entry.unique_id == expected_unique_id
-
-
-async def test_all_entities_exist(
-    hass: HomeAssistant,
-    enable_custom_integrations: None,
-) -> None:
-    """Test that all expected entities are created for the given payload."""
-    del enable_custom_integrations
-
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="Test",
-        data={
-            CONF_USERNAME: "user",
-            CONF_PASSWORD: "pass",
-            CONF_STATION_ID: MOCK_POWER_STATION_ID,
-        },
-    )
-    entry.add_to_hass(hass)
-
-    with patch(
-        "custom_components.sems_cn.sems_api.SemsApi.getData",
-        return_value=MOCK_GET_DATA_ACTUAL_JSON["data"],
-    ):
-        assert await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
-
-    inverter_data = MOCK_GET_DATA_ACTUAL_JSON["data"]["inverter"][0]["invert_full"]
-    inverter_sn = inverter_data["sn"]
-    data = SemsData(
-        inverters={inverter_sn: inverter_data},
-        currency=MOCK_GET_DATA_ACTUAL_JSON["data"]["kpi"]["currency"],
-    )
-
-    expected_sensor_unique_ids = {
-        sensor.unique_id for sensor in sensor_options_for_data(data)
-    }
-    expected_switch_unique_ids = {f"{inverter_sn}-switch"}
-    expected_unique_ids = expected_sensor_unique_ids | expected_switch_unique_ids
-
-    ent_reg = er.async_get(hass)
-    actual_unique_ids = {
-        entity.unique_id
-        for entity in er.async_entries_for_config_entry(ent_reg, entry.entry_id)
-    }
-
-    assert actual_unique_ids == expected_unique_ids
-
-
-async def test_exact_unique_ids_single_inverter_fixture(
-    hass: HomeAssistant,
-    enable_custom_integrations: None,
-) -> None:
-    """Test the exact set of unique IDs for the single-inverter fixture."""
-    del enable_custom_integrations
-
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="Test",
-        data={
-            CONF_USERNAME: "user",
-            CONF_PASSWORD: "pass",
-            CONF_STATION_ID: MOCK_POWER_STATION_ID,
-        },
-    )
-    entry.add_to_hass(hass)
-
-    with patch(
-        "custom_components.sems_cn.sems_api.SemsApi.getData",
-        return_value=MOCK_GET_DATA_ACTUAL_JSON["data"],
-    ):
-        assert await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
-
-    sn = MOCK_GET_DATA_ACTUAL_JSON["data"]["inverter"][0]["invert_full"]["sn"]
     expected_unique_ids = {
-        f"{sn}-capacity",
-        f"{sn}-eday",
-        f"{sn}-energy",
-        f"{sn}-fac1",
-        f"{sn}-fac2",
-        f"{sn}-fac3",
-        f"{sn}-hour-total",
-        f"{sn}-iac1",
-        f"{sn}-iac2",
-        f"{sn}-iac3",
-        f"{sn}-ibattery1",
-        f"{sn}-iday",
-        f"{sn}-ipv1",
-        f"{sn}-ipv2",
-        f"{sn}-ipv3",
-        f"{sn}-ipv4",
-        f"{sn}-itotal",
-        f"{sn}-lastmonthetotle",
-        f"{sn}-power",
-        f"{sn}-status",
-        f"{sn}-switch",
-        f"{sn}-temperature",
-        f"{sn}-thismonthetotle",
-        f"{sn}-vac1",
-        f"{sn}-vac2",
-        f"{sn}-vac3",
-        f"{sn}-vbattery1",
-        f"{sn}-vpv1",
-        f"{sn}-vpv2",
-        f"{sn}-vpv3",
-        f"{sn}-vpv4",
+        f"{MOCK_INVERTER_SN}-capacity",
+        f"{MOCK_INVERTER_SN}-eday",
+        f"{MOCK_INVERTER_SN}-energy",
+        f"{MOCK_INVERTER_SN}-grid_ac_frequency",
+        f"{MOCK_INVERTER_SN}-hour-total",
+        f"{MOCK_INVERTER_SN}-iac1",
+        f"{MOCK_INVERTER_SN}-iac2",
+        f"{MOCK_INVERTER_SN}-iac3",
+        f"{MOCK_INVERTER_SN}-ibattery1",
+        f"{MOCK_INVERTER_SN}-ipv1",
+        f"{MOCK_INVERTER_SN}-ipv2",
+        f"{MOCK_INVERTER_SN}-power",
+        f"{MOCK_INVERTER_SN}-status",
+        f"{MOCK_INVERTER_SN}-temperature",
+        f"{MOCK_INVERTER_SN}-thismonthetotle",
+        f"{MOCK_INVERTER_SN}-vac1",
+        f"{MOCK_INVERTER_SN}-vac2",
+        f"{MOCK_INVERTER_SN}-vac3",
+        f"{MOCK_INVERTER_SN}-vbattery1",
+        f"{MOCK_INVERTER_SN}-vpv1",
+        f"{MOCK_INVERTER_SN}-vpv2",
     }
 
     ent_reg = er.async_get(hass)
@@ -313,409 +312,3 @@ async def test_exact_unique_ids_single_inverter_fixture(
     }
 
     assert actual_unique_ids == expected_unique_ids
-
-
-async def test_exact_unique_ids_homekit_powerflow_fixture(
-    hass: HomeAssistant,
-    enable_custom_integrations: None,
-) -> None:
-    """Test the exact set of unique IDs for a HomeKit/powerflow payload."""
-    del enable_custom_integrations
-
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="Test",
-        data={
-            CONF_USERNAME: "user",
-            CONF_PASSWORD: "pass",
-            CONF_STATION_ID: MOCK_POWER_STATION_ID,
-        },
-    )
-    entry.add_to_hass(hass)
-
-    with patch(
-        "custom_components.sems_cn.sems_api.SemsApi.getData",
-        return_value=MOCK_GET_DATA_HOMEKIT_ACTUAL_JSON,
-    ):
-        assert await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
-
-    sn = MOCK_GET_DATA_HOMEKIT_ACTUAL_JSON["inverter"][0]["invert_full"]["sn"]
-    homekit_sn = (
-        MOCK_GET_DATA_HOMEKIT_ACTUAL_JSON.get("homKit", {}).get("sn")
-        or "GW-HOMEKIT-NO-SERIAL"
-    )
-    expected_unique_ids = {
-        # Regular inverter sensors
-        f"{sn}-capacity",
-        f"{sn}-eday",
-        f"{sn}-energy",
-        f"{sn}-fac1",
-        f"{sn}-fac2",
-        f"{sn}-fac3",
-        f"{sn}-hour-total",
-        f"{sn}-iac1",
-        f"{sn}-iac2",
-        f"{sn}-iac3",
-        f"{sn}-ibattery1",
-        f"{sn}-iday",
-        f"{sn}-ipv1",
-        f"{sn}-ipv2",
-        f"{sn}-ipv3",
-        f"{sn}-ipv4",
-        f"{sn}-itotal",
-        f"{sn}-lastmonthetotle",
-        f"{sn}-power",
-        f"{sn}-status",
-        f"{sn}-switch",
-        f"{sn}-temperature",
-        f"{sn}-thismonthetotle",
-        f"{sn}-vac1",
-        f"{sn}-vac2",
-        f"{sn}-vac3",
-        f"{sn}-vbattery1",
-        f"{sn}-vpv1",
-        f"{sn}-vpv2",
-        f"{sn}-vpv3",
-        f"{sn}-vpv4",
-        # HomeKit/powerflow sensors
-        f"{homekit_sn}-homekit",
-        f"{homekit_sn}-load",
-        f"{homekit_sn}-battery",
-        f"{homekit_sn}-genset",
-        f"{homekit_sn}-grid",
-        f"{homekit_sn}-load-status",
-        f"{homekit_sn}-pv",
-        f"{homekit_sn}-soc",
-        # Import/Export sensors
-        f"{homekit_sn}-import-energy",
-        f"{homekit_sn}-export-energy",
-        f"{homekit_sn}-import-energy-total",
-        f"{homekit_sn}-export-energy-total",
-    }
-
-    ent_reg = er.async_get(hass)
-    actual_unique_ids = {
-        entity.unique_id
-        for entity in er.async_entries_for_config_entry(ent_reg, entry.entry_id)
-    }
-
-    assert actual_unique_ids == expected_unique_ids
-
-
-async def test_homekit_powerflow_values_from_api_fixture(
-    hass: HomeAssistant,
-    enable_custom_integrations: None,
-) -> None:
-    """Test HomeKit/powerflow values extracted from the real API fixture."""
-    del enable_custom_integrations
-
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="Test",
-        data={
-            CONF_USERNAME: "user",
-            CONF_PASSWORD: "pass",
-            CONF_STATION_ID: MOCK_POWER_STATION_ID,
-        },
-    )
-    entry.add_to_hass(hass)
-
-    with patch(
-        "custom_components.sems_cn.sems_api.SemsApi.getData",
-        return_value=MOCK_GET_DATA_HOMEKIT_ACTUAL_JSON,
-    ):
-        assert await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
-
-    ent_reg = er.async_get(hass)
-
-    homekit_sn = (
-        MOCK_GET_DATA_HOMEKIT_ACTUAL_JSON.get("homKit", {}).get("sn")
-        or "GW-HOMEKIT-NO-SERIAL"
-    )
-
-    load_entity_id = ent_reg.async_get_entity_id(
-        Platform.SENSOR, DOMAIN, f"{homekit_sn}-homekit"
-    )
-    assert load_entity_id is not None
-    load_state = hass.states.get(load_entity_id)
-    assert load_state is not None
-    # `-homekit` follows legacy powerflow behavior: return 0 unless gridStatus == 1
-    assert float(load_state.state) == 0.0
-    assert load_state.attributes.get("pv") == "0"
-    assert load_state.attributes.get("bettery") == "0"
-    assert load_state.attributes.get("load") == "2337"
-    assert load_state.attributes.get("grid") == "2337"
-    assert load_state.attributes.get("statusText") == "Offline"
-    assert load_state.attributes.get("PowerFlowDirection") == "Import 2337(W)"
-
-    load_alias_entity_id = ent_reg.async_get_entity_id(
-        Platform.SENSOR, DOMAIN, f"{homekit_sn}-load"
-    )
-    assert load_alias_entity_id is not None
-    load_alias_state = hass.states.get(load_alias_entity_id)
-    assert load_alias_state is not None
-    assert float(load_alias_state.state) == 2337.0
-
-    grid_entity_id = ent_reg.async_get_entity_id(
-        Platform.SENSOR, DOMAIN, f"{homekit_sn}-grid"
-    )
-    assert grid_entity_id is not None
-    grid_state = hass.states.get(grid_entity_id)
-    assert grid_state is not None
-    assert float(grid_state.state) == 2337.0
-
-    pv_entity_id = ent_reg.async_get_entity_id(
-        Platform.SENSOR, DOMAIN, f"{homekit_sn}-pv"
-    )
-    assert pv_entity_id is not None
-    pv_state = hass.states.get(pv_entity_id)
-    assert pv_state is not None
-    assert float(pv_state.state) == 0.0
-
-    battery_entity_id = ent_reg.async_get_entity_id(
-        Platform.SENSOR, DOMAIN, f"{homekit_sn}-battery"
-    )
-    assert battery_entity_id is not None
-    battery_state = hass.states.get(battery_entity_id)
-    assert battery_state is not None
-    assert float(battery_state.state) == 0.0
-
-    genset_entity_id = ent_reg.async_get_entity_id(
-        Platform.SENSOR, DOMAIN, f"{homekit_sn}-genset"
-    )
-    assert genset_entity_id is not None
-    genset_state = hass.states.get(genset_entity_id)
-    assert genset_state is not None
-    assert float(genset_state.state) == 0.0
-
-    soc_entity_id = ent_reg.async_get_entity_id(
-        Platform.SENSOR, DOMAIN, f"{homekit_sn}-soc"
-    )
-    assert soc_entity_id is not None
-    soc_state = hass.states.get(soc_entity_id)
-    assert soc_state is not None
-    assert float(soc_state.state) == 0.0
-
-    load_status_entity_id = ent_reg.async_get_entity_id(
-        Platform.SENSOR, DOMAIN, f"{homekit_sn}-load-status"
-    )
-    assert load_status_entity_id is not None
-    load_status_state = hass.states.get(load_status_entity_id)
-    assert load_status_state is not None
-    assert int(float(load_status_state.state)) == -1
-
-    # Verify the import sensor exists and has correct attributes
-    import_entity_id = ent_reg.async_get_entity_id(
-        Platform.SENSOR, DOMAIN, f"{homekit_sn}-import-energy"
-    )
-    assert import_entity_id is not None
-
-    import_state = hass.states.get(import_entity_id)
-    assert import_state is not None
-    assert float(import_state.state) == 5.12
-    assert import_state.attributes.get("unit_of_measurement") == "kWh"
-
-    # Verify the export sensor exists and has correct attributes
-    export_entity_id = ent_reg.async_get_entity_id(
-        Platform.SENSOR, DOMAIN, f"{homekit_sn}-export-energy"
-    )
-    assert export_entity_id is not None
-
-    export_state = hass.states.get(export_entity_id)
-    assert export_state is not None
-    assert float(export_state.state) == 23.22
-    assert export_state.attributes.get("unit_of_measurement") == "kWh"
-
-    # Verify the total import sensor
-    total_import_entity_id = ent_reg.async_get_entity_id(
-        Platform.SENSOR, DOMAIN, f"{homekit_sn}-import-energy-total"
-    )
-    assert total_import_entity_id is not None
-
-    total_import_state = hass.states.get(total_import_entity_id)
-    assert total_import_state is not None
-    assert float(total_import_state.state) == 3977.33
-
-    # Verify the total export sensor
-    total_export_entity_id = ent_reg.async_get_entity_id(
-        Platform.SENSOR, DOMAIN, f"{homekit_sn}-export-energy-total"
-    )
-    assert total_export_entity_id is not None
-
-    total_export_state = hass.states.get(total_export_entity_id)
-    assert total_export_state is not None
-    assert float(total_export_state.state) == 12901.2
-
-
-def _build_homekit_test_data(
-    inverter_status: int = 1,
-    inverter_pac: int = 500,
-    inverter_temp: float = 32.0,
-    inverter_eday: float = 8.9,
-    inverter_iday: float = 1.96,
-    total_power: float = 500.0,
-    pv_value: str = "100(W)",
-    pv_status: int = 1,
-    load_value: str = "2337(W)",
-    load_status: int = 1,
-    grid_value: str = "2337(W)",
-    grid_status: int = -1,
-    battery_value: str = "0(W)",
-    battery_status: int = 0,
-    genset_value: str = "0(W)",
-    soc: int = 50,
-) -> dict:
-    """Build test data for homekit sensors with configurable values."""
-    return {
-        "inverter": [
-            {
-                "invert_full": {
-                    "name": "Test Inverter",
-                    "sn": "GW0000SN000TEST1",
-                    "powerstation_id": MOCK_POWER_STATION_ID,
-                    "status": inverter_status,
-                    "capacity": 3.0,
-                    "pac": inverter_pac,
-                    "etotal": 18843.2,
-                    "hour_total": 1234,
-                    "tempperature": inverter_temp,
-                    "eday": inverter_eday,
-                    "thismonthetotle": 85.7,
-                    "lastmonthetotle": 76.8,
-                    "iday": inverter_iday,
-                    "itotal": 4145.5,
-                }
-            }
-        ],
-        "kpi": {
-            "currency": "EUR",
-            "total_power": total_power,
-        },
-        "hasPowerflow": True,
-        "hasEnergeStatisticsCharts": False,
-        "homKit": {
-            "sn": None,  # Will use GW-HOMEKIT-NO-SERIAL as default
-            "homeKitLimit": False,
-        },
-        "powerflow": {
-            "pv": pv_value,
-            "pvStatus": pv_status,
-            "load": load_value,
-            "loadStatus": load_status,
-            "grid": grid_value,
-            "gridStatus": grid_status,
-            "bettery": battery_value,
-            "betteryStatus": battery_status,
-            "genset": genset_value,
-            "soc": soc,
-        },
-    }
-
-
-async def test_homekit_sensors_handle_empty_strings_at_night(
-    hass: HomeAssistant,
-    enable_custom_integrations: None,
-) -> None:
-    """Test that HomeKit sensors handle empty string values without crashing.
-
-    This simulates the scenario where sensors are first created with valid values,
-    then receive empty strings when the inverter goes offline at night.
-    """
-    del enable_custom_integrations
-
-    # Set up with valid homekit data (daytime)
-    initial_data = _build_homekit_test_data()
-
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="Test",
-        data={
-            CONF_USERNAME: "user",
-            CONF_PASSWORD: "pass",
-            CONF_STATION_ID: MOCK_POWER_STATION_ID,
-        },
-    )
-    entry.add_to_hass(hass)
-
-    with patch(
-        "custom_components.sems_cn.sems_api.SemsApi.getData",
-        return_value=initial_data,
-    ):
-        assert await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
-
-    ent_reg = er.async_get(hass)
-    homekit_sn = "GW-HOMEKIT-NO-SERIAL"  # Default when sn is None
-
-    # Verify entities are created and have values
-    load_entity_id = ent_reg.async_get_entity_id(
-        Platform.SENSOR, DOMAIN, f"{homekit_sn}-homekit"
-    )
-    assert load_entity_id is not None
-    load_state = hass.states.get(load_entity_id)
-    assert load_state is not None
-    assert float(load_state.state) == 0.0
-
-    load_alias_entity_id = ent_reg.async_get_entity_id(
-        Platform.SENSOR, DOMAIN, f"{homekit_sn}-load"
-    )
-    assert load_alias_entity_id is not None
-    load_alias_state = hass.states.get(load_alias_entity_id)
-    assert load_alias_state is not None
-    assert float(load_alias_state.state) == 2337.0
-
-    battery_entity_id = ent_reg.async_get_entity_id(
-        Platform.SENSOR, DOMAIN, f"{homekit_sn}-battery"
-    )
-    assert battery_entity_id is not None
-    battery_state = hass.states.get(battery_entity_id)
-    assert battery_state is not None
-    assert float(battery_state.state) == 0.0
-
-    # Simulate nighttime with empty strings - this was causing the crash
-    nighttime_data = _build_homekit_test_data(
-        inverter_status=-1,  # Offline
-        inverter_pac=0,
-        inverter_temp=0.0,
-        inverter_eday=0.0,
-        inverter_iday=0.0,
-        total_power=0.0,
-        pv_value="",  # Empty string when offline
-        pv_status=0,
-        load_value="",  # Empty string when offline
-        grid_value="-817(W)",
-        battery_value="",  # Empty string when offline
-        genset_value="",
-        soc=0,
-    )
-
-    # Update coordinator data with nighttime empty strings
-    coordinator = entry.runtime_data.coordinator
-    with patch(
-        "custom_components.sems_cn.sems_api.SemsApi.getData",
-        return_value=nighttime_data,
-    ):
-        await coordinator.async_refresh()
-        await hass.async_block_till_done()
-
-    # The sensors should now be unknown (not crash) when values are empty strings
-    load_state = hass.states.get(load_entity_id)
-    assert load_state is not None
-    assert load_state.state == "unknown"
-
-    battery_state = hass.states.get(battery_entity_id)
-    assert battery_state is not None
-    assert battery_state.state == "unknown"
-
-    # Load status sensor still has valid status values (not empty strings)
-    # so it should have a numeric value
-    load_status_entity_id = ent_reg.async_get_entity_id(
-        Platform.SENSOR, DOMAIN, f"{homekit_sn}-load-status"
-    )
-    assert load_status_entity_id is not None
-    load_status_state = hass.states.get(load_status_entity_id)
-    assert load_status_state is not None
-    # loadStatus=1 * gridStatus=-1 = -1
-    assert load_status_state.state == "-1"

@@ -75,9 +75,9 @@ _USER_AGENT_ANDROID = "okhttp/4.9.3"
 # Rate limiting (from upstream v10.x + observed CN behavior)
 # ---------------------------------------------------------------------------
 _SUCCESS_CODES = {"0", 0, "00000"}
-_RATE_LIMIT_CODE = "GY0429"               # returned by SEMS+ globally
-_NO_ACCESS_CODE = "100025"               # observed on CN plant endpoints
-_RATE_LIMIT_RETRY_AFTER = 300            # seconds
+_RATE_LIMIT_CODE = "GY0429"  # returned by SEMS+ globally
+_NO_ACCESS_CODE = "100025"  # observed on CN plant endpoints
+_RATE_LIMIT_RETRY_AFTER = 300  # seconds
 _MAX_TOKEN_RETRIES = 2
 
 
@@ -112,6 +112,7 @@ def _fresh_traceid() -> str:
     """Per-request trace id. Server uses it to correlate calls; any
     unique hex string works."""
     import uuid
+
     return str(uuid.uuid4()).replace("-", "")
 
 
@@ -193,7 +194,7 @@ class SemsApi:
         # sn -> (payload_or_None, fetched_at_epoch). None payloads are
         # cached too so a transient API failure doesn't trigger a tight
         # retry loop on the next coordinator tick.
-        self._info_cache: dict[str, tuple[dict[str, Any] | None, float]] = {}
+        self._info_cache: dict[str, tuple[list[dict[str, Any]] | None, float]] = {}
 
     # ----- public ------------------------------------------------------------
 
@@ -262,7 +263,7 @@ class SemsApi:
             return None
         return resp.get("data") or []
 
-    def get_information(self, sn: str, station_id: str) -> dict[str, Any] | None:
+    def get_information(self, sn: str, station_id: str) -> list[dict[str, Any]] | None:
         """Return the per-inverter static metadata, with a 24h client cache.
 
         The /information endpoint returns a flat list of ``{code, data,
@@ -291,7 +292,7 @@ class SemsApi:
             api_base + path,
             params={"deviceType": "INVERTER", "pwId": station_id},
         )
-        payload: dict[str, Any] | None
+        payload: list[dict[str, Any]] | None
         if resp is None:
             payload = None
         else:
@@ -356,11 +357,14 @@ class SemsApi:
             _LOGGER.error("SEMS login: missing data dict in response")
             return None
         _LOGGER.debug("SEMS login OK, token=%s", _redact_for_log(token))
+        self._token = token
         return token
 
     # ----- HTTP plumbing -----------------------------------------------------
 
-    def _post(self, url: str, *, headers: dict, json_body: dict | None = None) -> dict | None:
+    def _post(
+        self, url: str, *, headers: dict, json_body: dict | None = None
+    ) -> dict | None:
         return self._request("POST", url, headers=headers, json_body=json_body)
 
     def _request(
@@ -395,7 +399,9 @@ class SemsApi:
                 return None
             headers = _build_headers(self._token)
 
-        body = self._do_http(method, url, headers=headers, json_body=json_body, params=params)
+        body = self._do_http(
+            method, url, headers=headers, json_body=json_body, params=params
+        )
         if body is None:
             return None
 
@@ -404,28 +410,39 @@ class SemsApi:
         if str(body.get("code")) in (_RATE_LIMIT_CODE, _NO_ACCESS_CODE):
             _LOGGER.warning(
                 "SEMS %s %s: rate-limited (code=%s)",
-                method, url, body.get("code"),
+                method,
+                url,
+                body.get("code"),
             )
             raise SemsRateLimitedError(retry_after=_RATE_LIMIT_RETRY_AFTER)
 
         # C0602 on a non-login call: cached token is bad. Invalidate,
         # re-login, retry once. The login POST itself uses explicit
         # headers (no cached token), so this branch can't fire for it.
-        if body.get("code") == "C0602" and isinstance(self._token, dict) and headers is not None:
+        if (
+            body.get("code") == "C0602"
+            and isinstance(self._token, dict)
+            and headers is not None
+        ):
             _LOGGER.info(
                 "SEMS %s %s returned C0602 with cached token; re-logging in and retrying",
-                method, url,
+                method,
+                url,
             )
             self._token = None
             new_token = self._login()
             if new_token is not None:
+                self._token = new_token
                 retry_headers = _build_headers(
                     new_token,
                     with_content_type=json_body is not None,
                 )
                 body = self._do_http(
-                    method, url, headers=retry_headers,
-                    json_body=json_body, params=params,
+                    method,
+                    url,
+                    headers=retry_headers,
+                    json_body=json_body,
+                    params=params,
                 )
                 if body is None:
                     return None
@@ -434,10 +451,15 @@ class SemsApi:
             else:
                 _LOGGER.warning("Re-login after C0602 failed; giving up")
 
-        if validate_code and str(body.get("code")) not in {str(c) for c in _SUCCESS_CODES}:
+        if validate_code and str(body.get("code")) not in {
+            str(c) for c in _SUCCESS_CODES
+        }:
             _LOGGER.error(
                 "SEMS %s %s returned code=%s msg=%s",
-                method, url, body.get("code"), body.get("msg"),
+                method,
+                url,
+                body.get("code"),
+                body.get("msg"),
             )
             return None
 

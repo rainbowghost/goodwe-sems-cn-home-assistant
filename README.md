@@ -51,20 +51,9 @@ To find your Power Station ID manually, log in to
 [https://semsplus.goodwe.com](https://semsplus.goodwe.com) with your
 credentials. The Power Station ID is the UUID in the URL after login.
 
-### Optional: control the inverter power output via the switch entity
+### Recommended: use a visitor account
 
-It is possible to temporarily pause energy production via the "downtime"
-functionality available on the inverter. This is exposed as a switch and
-can be used in your own automations.
-
-Please note this calls an undocumented endpoint and can take a few minutes
-for the inverter to pick up the change. It takes approximately 60 seconds
-to start again when the inverter is in downtime mode.
-
-### Recommended: use visitor account if you do not need to control the inverter
-
-If you are only reading inverter stats, you can use a Visitor (read-only)
-account.
+This integration is read-only, so a Visitor account is recommended.
 
 Create via the official GoodWe app, or via the web portal:
 log in to [https://semsplus.goodwe.com](https://semsplus.goodwe.com), go
