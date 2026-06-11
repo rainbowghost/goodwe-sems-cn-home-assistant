@@ -1,3 +1,24 @@
+## [2.0.7] - 2026-06-10
+
+### Added
+
+- **Download-diagnostics button**. Home Assistant now shows a
+  "Download diagnostics" entry on the GoodWe SEMS CN API integration
+  card (Settings → Devices & services → ⋯ → Download diagnostics).
+  The downloaded JSON file contains the integration's runtime config
+  (with credentials redacted), the coordinator's flattened
+  per-inverter dict, and the raw SEMS+ plant-API factor groups
+  (telecounting and telemetry) for every inverter. Useful for
+  bug reports when a sensor reads the wrong value or is missing
+  altogether — the file shows exactly what came off the wire.
+- **`<sn>-status` sensor exposes a `raw_value` attribute**. The
+  status code (0-9) is now also available as a separate entity
+  attribute in Developer Tools → States, alongside the existing
+  `statusText` label. Handy for debugging which state the inverter
+  is in.
+
+[2.0.7]: https://github.com/rainbowghost/goodwe-sems-cn-home-assistant/releases/tag/v2.0.7
+
 ## [2.0.6] - 2026-06-10
 
 ### Fixed

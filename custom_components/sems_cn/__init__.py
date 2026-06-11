@@ -55,6 +55,12 @@ class SemsData:
     """Coordinator payload shape consumed by sensors / switch."""
 
     inverters: dict[str, dict[str, Any]]  # SN → flattened factor dict
+    # Raw plant API factor groups, kept verbatim for the diagnostics
+    # download endpoint. Not consumed by sensors (they read the
+    # flattened ``inverters`` dict), but useful when investigating
+    # missing factors or unexpected values.
+    raw_telecounting: dict[str, list[dict[str, Any]]]
+    raw_telemetry: dict[str, list[dict[str, Any]]]
     homekit: dict[str, Any] | None = None  # always None for SEMS+ plant API
     currency: str | None = None  # not exposed by plant API
 
@@ -117,7 +123,13 @@ class SemsDataUpdateCoordinator(DataUpdateCoordinator[SemsData]):
             raise UpdateFailed(
                 "SEMS API returned no inverter data — check station id or login."
             )
-        return SemsData(inverters=data["inverters"], homekit=None, currency=None)
+        return SemsData(
+            inverters=data["inverters"],
+            raw_telecounting=data.get("raw_telecounting", {}),
+            raw_telemetry=data.get("raw_telemetry", {}),
+            homekit=None,
+            currency=None,
+        )
 
     # ----- sync refresh, run in executor ------------------------------------
 
@@ -126,9 +138,11 @@ class SemsDataUpdateCoordinator(DataUpdateCoordinator[SemsData]):
         ``{sn: legacy_key_dict}`` so sensors don't need changes."""
         stations = self.api.get_stations()
         if not stations:
-            return {"inverters": {}}
+            return {"inverters": {}, "raw_telecounting": {}, "raw_telemetry": {}}
 
         inverters: dict[str, dict[str, Any]] = {}
+        raw_telecounting: dict[str, list[dict[str, Any]]] = {}
+        raw_telemetry: dict[str, list[dict[str, Any]]] = {}
         for station in stations:
             station_id = station.get("id")
             if not isinstance(station_id, str):
@@ -160,8 +174,14 @@ class SemsDataUpdateCoordinator(DataUpdateCoordinator[SemsData]):
                     telemetry_groups=telemetry,
                 )
                 inverters[sn] = flat
+                raw_telecounting[sn] = telecounting
+                raw_telemetry[sn] = telemetry
 
-        return {"inverters": inverters}
+        return {
+            "inverters": inverters,
+            "raw_telecounting": raw_telecounting,
+            "raw_telemetry": raw_telemetry,
+        }
 
 
 # ---------------------------------------------------------------------------

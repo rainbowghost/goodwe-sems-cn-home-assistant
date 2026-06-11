@@ -764,7 +764,9 @@ class SemsInverterSensor(SemsSensor):
     def extra_state_attributes(self) -> dict[str, Any] | None:
         """Return inverter attributes for backwards compatibility."""
 
-        if not (unique_id := self._attr_unique_id) or not unique_id.endswith("-power"):
+        if not (unique_id := self._attr_unique_id) or not unique_id.endswith(
+            ("-power", "-status")
+        ):
             return None
 
         if not self._value_path:
@@ -789,6 +791,7 @@ class SemsInverterSensor(SemsSensor):
             attributes["statusText"] = "Unknown"
         else:
             try:
+                attributes["raw_value"] = int(status)
                 attributes["statusText"] = STATUS_LABELS.get(int(status), "Unknown")
             except (TypeError, ValueError):
                 attributes["statusText"] = "Unknown"
