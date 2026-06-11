@@ -27,10 +27,10 @@ def verify_cleanup():
 
 
 @pytest.fixture(autouse=True)
-def auto_enable_custom integratings(request):
+def auto_enable_custom_integrations(request):
     """Stub for the upstream autouse wrapper.
 
-    The upstream wrapper drove the upstream ``enable_custom integratings``
+    The upstream wrapper drove the upstream ``enable_custom_integrations``
     fixture via ``yield from request.getfixturevalue(...)``. We let
     the upstream fixture run on its own when a test requests it
     directly (the four sensor tests do); the autouse chain is just a
