@@ -129,6 +129,29 @@ def _telecounting_payload() -> dict:
     }
 
 
+def _information_payload(
+    model_type: str = "GW10K-SDT-30", safety_version: str = "V1.08.08"
+) -> dict:
+    """Mirror the /sems-plant/api/equipments/<sn>/information response.
+
+    The real endpoint returns a flat list of ``{code, data, ...}`` factor
+    entries covering static inverter metadata. Anonymized to a real
+    GoodWe model from ``E:/MyCode/semsplus.txt`` line 45.
+    """
+    return {
+        "code": "00000",
+        "data": [
+            {"code": "status", "data": "5", "alias": "status"},
+            {"code": "deviceName", "data": "Inverter 1", "alias": "name_1"},
+            {"code": "sn", "data": MOCK_INVERTER_SN, "alias": "serial_number_1"},
+            {"code": "deviceType", "data": "INVERTER_GRID", "alias": "type"},
+            {"code": "modelType", "data": model_type, "alias": "model"},
+            {"code": "safetyVersion", "data": safety_version, "alias": "firmware_version"},
+            {"code": "ratedPower", "data": "10.0", "unit": "kW", "alias": "rated_power"},
+        ],
+    }
+
+
 def _telemetry_payload() -> dict:
     return {
         "code": "00000",
@@ -299,6 +322,35 @@ class TestFlattenInverter:
         assert "vac2" not in flat
         assert "ipv2" not in flat
 
+    def test_information_factors_populate_model_type_and_safety_version(self):
+        """The /information endpoint exposes modelType and safetyVersion;
+        the flatten step must surface both under stable keys for device.py."""
+        info = _information_payload()["data"]
+        flat = _flatten_inverter(
+            sn=MOCK_INVERTER_SN,
+            station={"id": MOCK_STATION_ID, "name": "Test", "installedPower": 10},
+            status=5,
+            telecounting_groups=[],
+            telemetry_groups=[],
+            information_factors=info,
+        )
+        assert flat["model_type"] == "GW10K-SDT-30"
+        assert flat["safety_version"] == "V1.08.08"
+
+    def test_missing_information_omits_model_and_safety_version(self):
+        """If the /information call failed, neither key should appear in
+        the flat dict (sensor code and device.py both check for absence)."""
+        flat = _flatten_inverter(
+            sn=MOCK_INVERTER_SN,
+            station={"id": MOCK_STATION_ID, "name": "Test", "installedPower": 10},
+            status=5,
+            telecounting_groups=[],
+            telemetry_groups=[],
+            information_factors=None,
+        )
+        assert "model_type" not in flat
+        assert "safety_version" not in flat
+
 
 class TestSemsApiUnit:
     """Request-level unit tests."""
@@ -449,6 +501,49 @@ class TestSemsApiUnit:
 
         params = mock_request.call_args.kwargs["params"]
         assert params == {"stationId": MOCK_STATION_ID}
+
+    @patch("custom_components.sems_cn.sems_api.requests.request")
+    def test_get_information_returns_data_list(self, mock_request):
+        """A successful /information call returns the parsed data list
+        and stamps the cache so the second call doesn't hit the wire."""
+        mock_response = Mock()
+        mock_response.json.return_value = _information_payload()
+        mock_request.return_value = mock_response
+
+        self.api._token = _token_dict()
+
+        first = self.api.get_information(MOCK_INVERTER_SN, MOCK_STATION_ID)
+        second = self.api.get_information(MOCK_INVERTER_SN, MOCK_STATION_ID)
+
+        # Endpoint hit exactly once thanks to the 24h cache.
+        assert mock_request.call_count == 1
+        # Path and query string match the captured plant API.
+        url = mock_request.call_args.args[1]
+        assert url.endswith(f"/sems-plant/api/equipments/{MOCK_INVERTER_SN}/information")
+        assert mock_request.call_args.kwargs["params"] == {
+            "deviceType": "INVERTER",
+            "pwId": MOCK_STATION_ID,
+        }
+        # Returned data is the unwrapped list from resp["data"].
+        assert isinstance(first, list)
+        assert any(f["code"] == "modelType" for f in first)
+        # Second call is the cached payload (same object).
+        assert first is second
+
+    @patch("custom_components.sems_cn.sems_api.requests.request")
+    def test_get_information_caches_none_on_failure(self, mock_request):
+        """If /information returns a non-success response, the cache stores
+        ``None`` for the full TTL so a transient failure doesn't trigger
+        a tight retry loop on the next coordinator tick."""
+        mock_response = Mock()
+        mock_response.json.return_value = {"code": "99999", "msg": "boom"}
+        mock_request.return_value = mock_response
+
+        self.api._token = _token_dict()
+        assert self.api.get_information(MOCK_INVERTER_SN, MOCK_STATION_ID) is None
+        # Second call must not hit the wire — None is cached too.
+        assert self.api.get_information(MOCK_INVERTER_SN, MOCK_STATION_ID) is None
+        assert mock_request.call_count == 1
 
     @patch("custom_components.sems_cn.sems_api.requests.request")
     def test_change_status_off(self, mock_request):

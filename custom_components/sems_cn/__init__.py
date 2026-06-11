@@ -198,6 +198,10 @@ class SemsDataUpdateCoordinator(DataUpdateCoordinator[SemsData]):
                 # Per-inverter refresh.
                 telecounting = self.api.get_telecounting(sn, station_id) or []
                 telemetry = self.api.get_telemetry(sn, station_id) or []
+                # /information is best-effort: get_information is
+                # 24h-cached on the client and returns None on any
+                # failure, so the coordinator never blocks on it.
+                information = self.api.get_information(sn, station_id) or []
 
                 flat = _flatten_inverter(
                     sn=sn,
@@ -205,6 +209,7 @@ class SemsDataUpdateCoordinator(DataUpdateCoordinator[SemsData]):
                     status=status_value,
                     telecounting_groups=telecounting,
                     telemetry_groups=telemetry,
+                    information_factors=information,
                 )
                 inverters[sn] = flat
                 raw_telecounting[sn] = telecounting
@@ -255,6 +260,7 @@ def _flatten_inverter(
     status: Any,
     telecounting_groups: list[dict],
     telemetry_groups: list[dict],
+    information_factors: list[dict] | None = None,
 ) -> dict[str, Any]:
     """Build the legacy per-inverter dict shape from plant-API groups.
 
@@ -264,6 +270,14 @@ def _flatten_inverter(
     """
     tc = _flatten_factors(telecounting_groups)
     tl = _flatten_factors(telemetry_groups)
+    # /information returns a flat (un-grouped) list of factor entries
+    # {code, data, ...}, not a list of groups. Flatten it the same way
+    # but without the inner ``factors`` wrapper.
+    info: dict[str, Any] = {}
+    for entry in information_factors or []:
+        code = entry.get("code")
+        if code:
+            info[code] = entry.get("data")
 
     def num(value: Any) -> Any:
         """Pass-through; legacy sensors handle string→Decimal themselves."""
@@ -374,6 +388,13 @@ def _flatten_inverter(
         "station_id": station.get("id"),
         "station_name": station.get("name"),
         "installed_power": station.get("installedPower"),
+        # Static per-inverter metadata from /information (cached 24h
+        # by SemsApi). modelType is e.g. "GW10K-SDT-30", safetyVersion
+        # is e.g. "V1.08.08". Both are absent on the plant API's
+        # /telemetry response, so the device card used to show
+        # "unknown" for model/sw_version before this field existed.
+        "model_type": num(info.get("modelType")),
+        "safety_version": num(info.get("safetyVersion")),
     }
 
     # Drop None values so legacy sensors' ``empty_value`` logic still works

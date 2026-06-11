@@ -13,7 +13,9 @@ Flow:
     3. GET  /sems-plant/api/stations/device/all-status?stationId=… → SN list
     4. GET  /sems-plant/api/equipments/{SN}/telecounting?… → power & history
     5. GET  /sems-plant/api/equipments/{SN}/telemetry?…     → live data
-    6. POST /PowerStation/SaveRemoteControlInverter → inverter on/off
+    6. GET  /sems-plant/api/equipments/{SN}/information?…    → static metadata
+       (model, firmware). Cached 24h on the client — changes ~never.
+    7. POST /PowerStation/SaveRemoteControlInverter → inverter on/off
 
 Every plant call carries a freshly-computed ``x-signature =
 base64(sha256(now_ms@uid@token) + "@" + now_ms)`` header — same
@@ -44,9 +46,15 @@ _STATIONS_PATH_WEB = "/sems-plant/api/stations/simple-query"
 _DEVICE_PATH = "/sems-plant/api/stations/device/all-status"
 _TELECOUNTING_PATH = "/sems-plant/api/equipments/{sn}/telecounting"
 _TELEMETRY_PATH = "/sems-plant/api/equipments/{sn}/telemetry"
+_INFORMATION_PATH = "/sems-plant/api/equipments/{sn}/information"
 _POWER_CONTROL_PATH = "/PowerStation/SaveRemoteControlInverter"
 
 _REQUEST_TIMEOUT = 30  # seconds
+
+# Cache TTL for /information responses. Model + firmware versions are
+# set at the factory and almost never change, so 24h is plenty and it
+# keeps the API call budget down on multi-inverter sites.
+_INFORMATION_CACHE_TTL = 24 * 60 * 60  # seconds
 
 # Login defaults for the empty token header (uid/timestamp/token are
 # zero/empty when no session exists yet).
@@ -182,6 +190,10 @@ class SemsApi:
         self._username = username
         self._password = password
         self._token: dict[str, Any] | None = None
+        # sn -> (payload_or_None, fetched_at_epoch). None payloads are
+        # cached too so a transient API failure doesn't trigger a tight
+        # retry loop on the next coordinator tick.
+        self._info_cache: dict[str, tuple[dict[str, Any] | None, float]] = {}
 
     # ----- public ------------------------------------------------------------
 
@@ -249,6 +261,44 @@ class SemsApi:
         if resp is None:
             return None
         return resp.get("data") or []
+
+    def get_information(self, sn: str, station_id: str) -> dict[str, Any] | None:
+        """Return the per-inverter static metadata, with a 24h client cache.
+
+        The /information endpoint returns a flat list of ``{code, data,
+        dataType, ...}`` factor entries covering ``modelType`` (e.g.
+        ``"GW10K-SDT-30"``) and ``safetyVersion`` (alias
+        ``firmware_version``). Model and firmware are set at the factory
+        and almost never change, so we cache the full response for
+        ``_INFORMATION_CACHE_TTL`` seconds. Transient API failures are
+        cached as ``None`` for the same TTL to avoid hammering the
+        endpoint if SEMS+ rate-limits us.
+
+        Returns the ``data`` list on success, or ``None`` on any failure
+        (login, network, non-00000 code, expired-and-not-yet-fetched).
+        """
+        cached = self._info_cache.get(sn)
+        if cached is not None:
+            payload, fetched_at = cached
+            if (time.time() - fetched_at) < _INFORMATION_CACHE_TTL:
+                return payload
+        api_base = self._ensure_api_base()
+        if api_base is None:
+            return None
+        path = _INFORMATION_PATH.format(sn=sn)
+        resp = self._request(
+            "GET",
+            api_base + path,
+            params={"deviceType": "INVERTER", "pwId": station_id},
+        )
+        payload: dict[str, Any] | None
+        if resp is None:
+            payload = None
+        else:
+            data = resp.get("data")
+            payload = data if isinstance(data, list) else None
+        self._info_cache[sn] = (payload, time.time())
+        return payload
 
     def change_status(self, inverter_sn: str, status: str | int) -> bool:
         """Toggle an inverter. ``status="2"``=off, ``"4"``=on.

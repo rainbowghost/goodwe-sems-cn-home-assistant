@@ -1,3 +1,26 @@
+## [2.0.9] - 2026-06-11
+
+### Added
+
+- **Inverter model and firmware version on the device card.** A new
+  plant-API endpoint, `/sems-plant/api/equipments/{SN}/information`,
+  returns static per-inverter metadata that the previous
+  `getData`-based flow had baked into the inverter dict. The
+  coordinator now calls it once per inverter and surfaces:
+  - `modelType` (e.g. `GW10K-SDT-30`) as the device **model**
+  - `safetyVersion` (alias `firmware_version`, e.g. `V1.08.08`) as
+    the device **sw_version**
+  The card previously showed `unknown` for both fields because the
+  plant API's `/telemetry` and `/telecounting` factor groups don't
+  expose them.
+- **24h client cache for `/information` responses.** Model and
+  firmware versions are factory-set and almost never change, so
+  the response is cached on the `SemsApi` client for 24h. Transient
+  failures are cached as `None` for the same TTL to avoid a tight
+  retry loop if SEMS+ rate-limits us.
+
+[2.0.9]: https://github.com/rainbowghost/goodwe-sems-cn-home-assistant/releases/tag/v2.0.9
+
 ## [2.0.8] - 2026-06-11
 
 ### Fixed
