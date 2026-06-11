@@ -1,3 +1,68 @@
+## [2.1.0] - 2026-06-11
+
+### Fixed
+
+- **`SemsApi._login()` now caches the token on the client.** Previously
+  the login method only returned the token and left `self._token` as
+  `None`, so every plant call re-logged in (or relied on the test
+  having pre-seeded `self._token`). The coordinator / config flow /
+  diagnostics download all still worked end-to-end, but unit tests that
+  called `_login()` and then exercised plant methods hit
+  "no token available for plant headers". `_login()` now also assigns
+  `self._token = token`, and the C0602 re-login branch assigns the
+  fresh token to `self._token` before retrying. Plant calls that
+  follow `_login()` no longer need a manual pre-seed.
+- **Mypy no-redef in `SemsApi.get_information`.** The
+  `payload: list[dict] | None` annotation shadowed the tuple-unpacked
+  `payload` from the cache lookup, tripping
+  `error: Name "payload" already defined`. Reworked the cache-miss
+  branch to assign `None` first and narrow with `isinstance(data,
+  list)`. Behavior unchanged.
+- **Mypy incompatible-types in `SemsDataUpdateCoordinator`.** The
+  coordinator assigned `self.api.get_devices(station_id)` (which can
+  be `None`) to `raw_all_status[station_id]` (typed as
+  `list[dict]`) and only checked the result for emptiness on the
+  next line, where mypy could no longer narrow the type. The
+  None-check now runs before the assignment, so empty device lists
+  are no longer written as `None` placeholders in
+  `raw_all_status`. The diagnostics consumer was already tolerant
+  of the previous shape, so no consumer change is needed.
+
+### Changed
+
+- **Optional `station_id` config option.** The config flow used to
+  always query the API for the first station when `station_id` was
+  missing. It still does that by default, but multi-station accounts
+  can now set `powerstation_id` explicitly so the integration only
+  refreshes the configured station. The coordinator filters the
+  station list returned by `SemsApi.get_stations()` by
+  `self.station_id` (read from `entry.data`) before iterating.
+- **`get_information` return type changed from `dict` to `list`.**
+  The endpoint returns a flat list of `{code, data, ...}` factor
+  entries, not a single object; the type hint just caught up with
+  the implementation. The 24h cache value type is also
+  `list[...] | None` now.
+- **Test suite rewritten for the SEMS+ plant API shape.** The legacy
+  `getData()`-based fixtures and `sensor_options_for_data` tests were
+  deleted; the sensor test file is now built around `SemsData` and
+  the new coordinator payload. README/CHANGELOG references to the
+  removed inverter on/off switch were dropped (it was already
+  removed in 2.0.3).
+
+### Build
+
+- **Conftest no-op overrides for broken upstream HA fixtures.** Under
+  Python 3.13 + `pytest-homeassistant-custom-component` 0.13.316, the
+  upstream `enable_event_loop_debug` and `verify_cleanup` fixtures
+  raise `RuntimeError: There is no current event loop in thread
+  'MainThread'` because the bundled `HassEventLoopPolicy`'s
+  `set_event_loop(new_event_loop())` silently fails to bind the loop
+  on the main thread. Both fixtures are about asyncio debug / cleanup
+  state, not test correctness, so the conftest replaces them with
+  no-ops. The upstream `enable_custom_integrations` fixture is left
+  alone — overriding it would leave HA without `sems_cn` registered
+  and the sensor tests would fail with "Integration not found".
+
 ## [2.0.9] - 2026-06-11
 
 ### Added
@@ -19,6 +84,7 @@
   failures are cached as `None` for the same TTL to avoid a tight
   retry loop if SEMS+ rate-limits us.
 
+[2.1.0]: https://github.com/rainbowghost/goodwe-sems-cn-home-assistant/releases/tag/v2.1.0
 [2.0.9]: https://github.com/rainbowghost/goodwe-sems-cn-home-assistant/releases/tag/v2.0.9
 
 ## [2.0.8] - 2026-06-11
