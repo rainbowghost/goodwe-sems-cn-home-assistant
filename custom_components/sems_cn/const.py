@@ -19,9 +19,7 @@ SEMS_CONFIG_SCHEMA = vol.Schema(
         vol.Required(CONF_USERNAME): str,
         vol.Required(CONF_PASSWORD): str,
         vol.Optional(CONF_STATION_ID): str,
-        vol.Optional(
-            CONF_SCAN_INTERVAL, description={"suggested_value": 60}
-        ): int,
+        vol.Optional(CONF_SCAN_INTERVAL, description={"suggested_value": 60}): int,
     }
 )
 
@@ -35,6 +33,7 @@ AC_FEQ_EMPTY = 655.35
 # Confirmed against the live GoodWe app/web status-icons table. The
 # legacy gopsapi 4-state mapping ({-1, 0, 1, 2}) is replaced — the
 # new API uses an 0-indexed enumeration with 10 distinct values.
+# fmt: off
 STATUS_LABELS = {
     0: "Offline",             # nameKey "offline"            离线
     1: "Online",              # nameKey "online"             在线
@@ -47,6 +46,7 @@ STATUS_LABELS = {
     8: "Available",           # nameKey "available"          空闲
     9: "Maintenance",         # nameKey "in_maintenance_status" 维护中
 }
+# fmt: on
 
 
 # Plant API factor codes. One source of truth for the new factor names
