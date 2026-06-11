@@ -292,12 +292,11 @@ class SemsApi:
             api_base + path,
             params={"deviceType": "INVERTER", "pwId": station_id},
         )
-        payload: list[dict[str, Any]] | None
-        if resp is None:
-            payload = None
-        else:
+        payload = None
+        if resp is not None:
             data = resp.get("data")
-            payload = data if isinstance(data, list) else None
+            if isinstance(data, list):
+                payload = data
         self._info_cache[sn] = (payload, time.time())
         return payload
 

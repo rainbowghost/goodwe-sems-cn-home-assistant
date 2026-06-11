@@ -163,9 +163,9 @@ class SemsDataUpdateCoordinator(DataUpdateCoordinator[SemsData]):
             if not isinstance(station_id, str):
                 continue
             devices = self.api.get_devices(station_id)
-            raw_all_status[station_id] = devices
             if not devices:
                 continue
+            raw_all_status[station_id] = devices
             for entry in devices:
                 if entry.get("deviceType") != "INVERTER":
                     continue
