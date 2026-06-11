@@ -3,23 +3,21 @@
 import pytest
 
 
-# Override ``enable_event_loop_debug`` from
-# ``pytest-homeassistant-custom-component``. The upstream fixture calls
-# ``asyncio.get_event_loop().set_debug(True)`` during setup, which under
-# Python 3.13's ``HassEventLoopPolicy`` raises
-# ``RuntimeError: There is no current event loop in thread 'MainThread'``
-# — the policy's ``set_event_loop(new_event_loop())`` path silently fails
-# to bind the loop, so the final ``if _local._loop is None`` check
-# raises. asyncio debug mode has no effect on our functional tests, so
-# the override is a no-op.
+# Override fixtures from ``pytest-homeassistant-custom-component`` that
+# call ``asyncio.get_event_loop()`` during setup/teardown. Under Python
+# 3.13's ``HassEventLoopPolicy`` the policy's
+# ``set_event_loop(new_event_loop())`` path silently fails to bind the
+# loop, so the final ``if _local._loop is None`` check raises
+# ``RuntimeError: There is no current event loop in thread 'MainThread'``.
+# Both fixtures are about asyncio debug / cleanup state, not test
+# correctness, so replacing them with no-ops is safe.
 @pytest.fixture
 def enable_event_loop_debug():
-    """Override the upstream HA plugin's debug-enabling fixture.
+    return None
 
-    The upstream implementation is broken under Python 3.13 + HA's
-    HassEventLoopPolicy, and the debug flag is irrelevant to the
-    assertions these tests make.
-    """
+
+@pytest.fixture
+def verify_cleanup():
     return None
 
 
